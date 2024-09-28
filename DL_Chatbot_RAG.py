@@ -147,6 +147,19 @@ if submitted and user_input:
             # Append Amanda's response
             st.session_state["messages"].append({"role": "assistant", "content": amanda_message})
             st.session_state["feedback"].append(None)  # No feedback initially
+
+            # Store source document if it exists
+            source_documents = result.get("source_documents", [])
+            if source_documents:
+                most_relevant_source = source_documents[0]  # Get the most relevant source
+                metadata = most_relevant_source.metadata
+                filename = os.path.basename(metadata.get("source", "Unknown"))
+                page_number = metadata.get("page", "Unknown")
+                st.session_state["messages"][-1]["source"] = {
+                    "filename": filename,
+                    "page": page_number
+                }
+
         except Exception as e:
             st.error(f"Error: {e}")
 
@@ -157,6 +170,12 @@ for idx, message in enumerate(st.session_state["messages"]):
         st.markdown(f"**You:** {message['content']}")
     elif message["role"] == "assistant":
         st.markdown(f"**Amanda 🤖:** {message['content']}")
+
+        # Display the most relevant source information if available
+        if "source" in message:
+            source_info = message["source"]
+            st.markdown(f"""<p style='color: grey;'>Source: File: <i>{source_info['filename']}</i>, Page: <i>{source_info['page']}</i></p>""",
+                unsafe_allow_html=True)
 
         # Like, Dislike, Re-generate, and Copy to Clipboard buttons
         col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
