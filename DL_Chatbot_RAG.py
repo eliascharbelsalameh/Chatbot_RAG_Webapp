@@ -181,10 +181,18 @@ for idx, message in enumerate(st.session_state["messages"]):
         col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
         with col1:
             if st.button(f"👍", key=f"like_{idx}"):
-                st.session_state["feedback"][idx] = "Liked"
+                if len(st.session_state["feedback"]) <= idx:
+                    st.session_state["feedback"].append("Liked")
+                else:
+                    st.session_state["feedback"][idx] = "Liked"
+                st.success(f"Feedback for message {idx} set to: Liked")
         with col2:
             if st.button(f"👎", key=f"dislike_{idx}"):
-                st.session_state["feedback"][idx] = "Disliked"
+                if len(st.session_state["feedback"]) <= idx:
+                    st.session_state["feedback"].append("Disliked")
+                else:
+                    st.session_state["feedback"][idx] = "Disliked"
+                st.success(f"Feedback for message {idx} set to: Disliked")
         with col3:
             if st.button(f"🔄", key=f"regenerate_{idx}"):
                 try:
@@ -198,6 +206,12 @@ for idx, message in enumerate(st.session_state["messages"]):
             if st.button(f"📋", key=f"copy_{idx}"):
                 pyperclip.copy(message['content'])
                 st.success("Copied to clipboard!")
+
+# Display all feedback collected so far
+st.markdown("### User Feedback Summary")
+for i, feedback in enumerate(st.session_state["feedback"]):
+    if feedback:
+        st.markdown(f"Message {i}: {feedback}")
 
 # Footer
 st.markdown("---")
