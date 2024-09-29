@@ -112,7 +112,6 @@ def num_tokens_from_messages(messages, model):
         st.error(f"Error in token calculation: {e}")
         return 0
 
-
 # Function to calculate cost
 def calculate_cost(num_tokens, model):
     # Pricing as per OpenAI's API rates (change according to the latest rates)
@@ -144,7 +143,7 @@ def create_rag_chain():
 
     # Create retrieval-based QA chain
     qa_chain = RetrievalQA.from_chain_type(
-        llm=ChatOpenAI(temperature=0, model_name="gpt-3.5-turbo"), # or gpt-3.5-turbo
+        llm=ChatOpenAI(temperature=0, model_name="gpt-3.5-turbo"), # gpt-3.5-turbo / gpt-4
         chain_type="stuff",
         retriever=vectorstore.as_retriever(),
         return_source_documents=True,
@@ -162,51 +161,6 @@ if "messages" not in st.session_state:
     ]
 if "feedback" not in st.session_state:
     st.session_state["feedback"] = []  # Store feedback for each response
-
-# Form to handle user input and submission
-with st.form("chat_input", clear_on_submit=True):
-    user_input = st.text_input("You:", key="input", placeholder="Type your message here...")
-    submitted = st.form_submit_button("Send")
-
-# Handle user input and generate response with RAG
-if submitted and user_input:
-    st.session_state["messages"].append({"role": "user", "content": user_input})
-
-    with st.spinner("Amanda is thinking..."):
-        try:
-            result = qa_chain({"query": user_input})
-
-            # Validate result before accessing keys
-            if "result" in result and result["result"]:
-                amanda_message = result["result"].strip()
-            else:
-                st.error("Unexpected response from QA chain.")
-                amanda_message = "Sorry, I couldn't process your query."
-
-            # Calculate tokens and cost
-            num_tokens = num_tokens_from_messages(st.session_state["messages"], model="gpt-3.5-turbo")
-            cost = calculate_cost(num_tokens, model="gpt-3.5-turbo")
-
-            # Append Amanda's response
-            st.session_state["messages"].append({"role": "assistant", "content": amanda_message})
-            st.session_state["feedback"].append(None)  # No feedback initially
-
-            # Store source document if it exists
-            source_documents = result.get("source_documents", [])
-            if source_documents:
-                most_relevant_source = source_documents[0]  # Get the most relevant source
-                metadata = most_relevant_source.metadata
-                filename = os.path.basename(metadata.get("source", "Unknown"))
-                page_number = metadata.get("page", "Unknown")
-                st.session_state["messages"][-1]["source"] = {
-                    "filename": filename,
-                    "page": page_number,
-                    "tokens": num_tokens,
-                    "cost": cost
-                }
-
-        except Exception as e:
-            st.error(f"Error: {e}")
 
 # Display conversation history
 st.markdown("---")
@@ -253,6 +207,53 @@ for idx, message in enumerate(st.session_state["messages"]):
             if st.button(f"📋", key=f"copy_{idx}"):
                 pyperclip.copy(message['content'])
                 st.success("Copied to clipboard!")
+
+# Form to handle user input and submission (moved below conversation history)
+st.markdown("---")
+form_key = f"chat_input_{len(st.session_state['messages'])}"
+with st.form(form_key, clear_on_submit=True):
+    user_input = st.text_input("You:", key="input", placeholder="Type your message here...")
+    submitted = st.form_submit_button("Send")
+
+# Handle user input and generate response with RAG
+if submitted and user_input:
+    st.session_state["messages"].append({"role": "user", "content": user_input})
+
+    with st.spinner("Amanda is thinking..."):
+        try:
+            result = qa_chain({"query": user_input})
+
+            # Validate result before accessing keys
+            if "result" in result and result["result"]:
+                amanda_message = result["result"].strip()
+            else:
+                st.error("Unexpected response from QA chain.")
+                amanda_message = "Sorry, I couldn't process your query."
+
+            # Calculate tokens and cost
+            num_tokens = num_tokens_from_messages(st.session_state["messages"], model="gpt-3.5-turbo")
+            cost = calculate_cost(num_tokens, model="gpt-3.5-turbo")
+
+            # Append Amanda's response
+            st.session_state["messages"].append({"role": "assistant", "content": amanda_message})
+            st.session_state["feedback"].append(None)  # No feedback initially
+
+            # Store source document if it exists
+            source_documents = result.get("source_documents", [])
+            if source_documents:
+                most_relevant_source = source_documents[0]  # Get the most relevant source
+                metadata = most_relevant_source.metadata
+                filename = os.path.basename(metadata.get("source", "Unknown"))
+                page_number = metadata.get("page", "Unknown")
+                st.session_state["messages"][-1]["source"] = {
+                    "filename": filename,
+                    "page": page_number,
+                    "tokens": num_tokens,
+                    "cost": cost
+                }
+
+        except Exception as e:
+            st.error(f"Error: {e}")
 
 # Display all feedback collected so far
 st.markdown("### User Feedback Summary")
