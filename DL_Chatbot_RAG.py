@@ -9,6 +9,7 @@ from langchain.vectorstores import FAISS                        # type: ignore
 from langchain.chat_models import ChatOpenAI                    # type: ignore
 from langchain.text_splitter import CharacterTextSplitter       # type: ignore
 from langchain.document_loaders import PyPDFLoader              # type: ignore
+import tiktoken  # For token counting                           # type: ignore
 import os.path
 
 # Set OpenAI API key from environment variable
@@ -36,7 +37,7 @@ st.markdown(
         color: white;
     }
     </style>
-    """, 
+    """,
     unsafe_allow_html=True
 )
 
@@ -93,6 +94,38 @@ def load_vector_store():
     vectorstore = FAISS.load_local('vectorstore/db_faiss', embeddings, allow_dangerous_deserialization=True)
     return vectorstore
 
+# Function to calculate token usage with error handling
+def num_tokens_from_messages(messages, model):
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+        num_tokens = 0
+        for message in messages:
+            num_tokens += 4  # every message starts with 4 tokens
+            for key, value in message.items():
+                if isinstance(value, str):  # Ensure value is a string before encoding
+                    num_tokens += len(encoding.encode(value))
+            if message.get("role") == "user":
+                num_tokens += 1  # additional token for the role 'user'
+        num_tokens += 2  # every reply is primed with 2 tokens
+        return num_tokens
+    except Exception as e:
+        st.error(f"Error in token calculation: {e}")
+        return 0
+
+
+# Function to calculate cost
+def calculate_cost(num_tokens, model):
+    # Pricing as per OpenAI's API rates (change according to the latest rates)
+    if model == "gpt-3.5-turbo":
+        cost_per_1k_tokens = 0.002  # cost per 1k tokens for gpt-3.5-turbo
+    elif model == "gpt-4":
+        cost_per_1k_tokens = 0.03  # adjust as needed
+    else:
+        raise ValueError(f"Unsupported model: {model}")
+    
+    cost = (num_tokens / 1000) * cost_per_1k_tokens
+    return cost
+
 # Setup the QA Retrieval Chain
 def create_rag_chain():
     vectorstore = setup_vector_store(pdf_directory)  # Ensure we create/load vector store
@@ -111,7 +144,7 @@ def create_rag_chain():
 
     # Create retrieval-based QA chain
     qa_chain = RetrievalQA.from_chain_type(
-        llm=ChatOpenAI(temperature=0, model_name="gpt-3.5-turbo"),
+        llm=ChatOpenAI(temperature=0, model_name="gpt-3.5-turbo"), # or gpt-3.5-turbo
         chain_type="stuff",
         retriever=vectorstore.as_retriever(),
         return_source_documents=True,
@@ -142,7 +175,17 @@ if submitted and user_input:
     with st.spinner("Amanda is thinking..."):
         try:
             result = qa_chain({"query": user_input})
-            amanda_message = result["result"].strip()
+
+            # Validate result before accessing keys
+            if "result" in result and result["result"]:
+                amanda_message = result["result"].strip()
+            else:
+                st.error("Unexpected response from QA chain.")
+                amanda_message = "Sorry, I couldn't process your query."
+
+            # Calculate tokens and cost
+            num_tokens = num_tokens_from_messages(st.session_state["messages"], model="gpt-3.5-turbo")
+            cost = calculate_cost(num_tokens, model="gpt-3.5-turbo")
 
             # Append Amanda's response
             st.session_state["messages"].append({"role": "assistant", "content": amanda_message})
@@ -157,7 +200,9 @@ if submitted and user_input:
                 page_number = metadata.get("page", "Unknown")
                 st.session_state["messages"][-1]["source"] = {
                     "filename": filename,
-                    "page": page_number
+                    "page": page_number,
+                    "tokens": num_tokens,
+                    "cost": cost
                 }
 
         except Exception as e:
@@ -175,7 +220,9 @@ for idx, message in enumerate(st.session_state["messages"]):
         if "source" in message:
             source_info = message["source"]
             st.markdown(f"""<p style='color: grey;'>Source: File: <i>{source_info['filename']}</i>, Page: <i>{source_info['page']}</i></p>""",
-                unsafe_allow_html=True)
+                        unsafe_allow_html=True)
+            st.markdown(f"""<p style='color: grey;'>Tokens used: <i>{source_info['tokens']}</i>, Cost: <i>${source_info['cost']:.6f}</i></p>""",
+                        unsafe_allow_html=True)
 
         # Like, Dislike, Re-generate, and Copy to Clipboard buttons
         col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
