@@ -11,7 +11,6 @@ from langchain.text_splitter import CharacterTextSplitter       # type: ignore
 from langchain.document_loaders import PyPDFLoader              # type: ignore
 import tiktoken  # For token counting                           # type: ignore
 import os.path
-import time
 
 # Set OpenAI API key from environment variable
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -36,27 +35,6 @@ st.markdown(
     }
     .stMarkdown {
         color: white;
-    }
-    .chat-bubble-user {
-        background-color: #3a3b3c;
-        color: white;
-        padding: 10px;
-        border-radius: 10px;
-        margin-bottom: 5px;
-        max-width: 80%;
-    }
-    .chat-bubble-assistant {
-        background-color: #4c1f73;
-        color: white;
-        padding: 10px;
-        border-radius: 10px;
-        margin-bottom: 5px;
-        max-width: 80%;
-    }
-    .chat-container {
-        max-height: 500px;
-        overflow-y: auto;
-        padding-right: 20px;
     }
     </style>
     """,
@@ -184,58 +162,53 @@ if "messages" not in st.session_state:
 if "feedback" not in st.session_state:
     st.session_state["feedback"] = []  # Store feedback for each response
 
-# Display conversation history in a scrollable container
-chat_container = st.container()
-with chat_container:
-    st.markdown("---")
-    for idx, message in enumerate(st.session_state["messages"]):
-        if message["role"] == "user":
-            st.markdown(f"<div class='chat-bubble-user'><b>You:</b> {message['content']}</div>", unsafe_allow_html=True)
-        elif message["role"] == "assistant":
-            st.markdown(f"<div class='chat-bubble-assistant'><b>Amanda 🤖:</b> {message['content']}</div>", unsafe_allow_html=True)
+# Display conversation history
+st.markdown("---")
+for idx, message in enumerate(st.session_state["messages"]):
+    if message["role"] == "user":
+        st.markdown(f"**You:** {message['content']}")
+    elif message["role"] == "assistant":
+        st.markdown(f"**Amanda 🤖:** {message['content']}")
 
-            # Display the most relevant source information if available
-            if "source" in message:
-                source_info = message["source"]
-                st.markdown(f"""<p style='color: grey;'>Source: File: <i>{source_info['filename']}</i>, Page: <i>{source_info['page']}</i></p>""",
-                            unsafe_allow_html=True)
-                st.markdown(f"""<p style='color: grey;'>Tokens used: <i>{source_info['tokens']}</i>, Cost: <i>${source_info['cost']:.6f}</i></p>""",
-                            unsafe_allow_html=True)
+        # Display the most relevant source information if available
+        if "source" in message:
+            source_info = message["source"]
+            st.markdown(f"""<p style='color: grey;'>Source: File: <i>{source_info['filename']}</i>, Page: <i>{source_info['page']}</i></p>""",
+                        unsafe_allow_html=True)
+            st.markdown(f"""<p style='color: grey;'>Tokens used: <i>{source_info['tokens']}</i>, Cost: <i>${source_info['cost']:.6f}</i></p>""",
+                        unsafe_allow_html=True)
 
-            # Like, Dislike, Re-generate, and Copy to Clipboard buttons
-            col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
-            with col1:
-                if st.button(f"👍", key=f"like_{idx}"):
-                    if len(st.session_state["feedback"]) <= idx:
-                        st.session_state["feedback"].append("Liked")
-                    else:
-                        st.session_state["feedback"][idx] = "Liked"
-                    st.success(f"Feedback for message {idx} set to: Liked")
-            with col2:
-                if st.button(f"👎", key=f"dislike_{idx}"):
-                    if len(st.session_state["feedback"]) <= idx:
-                        st.session_state["feedback"].append("Disliked")
-                    else:
-                        st.session_state["feedback"][idx] = "Disliked"
-                    st.success(f"Feedback for message {idx} set to: Disliked")
-            with col3:
-                if st.button(f"🔄", key=f"regenerate_{idx}"):
-                    try:
-                        # Re-generate the response
-                        user_message = st.session_state["messages"][-2]["content"]
-                        with st.spinner("Re-generating response..."):
-                            result = qa_chain({"query": user_message})
-                            amanda_message = result["result"].strip()
-                            st.session_state["messages"][-1]["content"] = amanda_message
-                            st.experimental_rerun()  # Update the chat history
-                    except Exception as e:
-                        st.error(f"Error during regeneration: {e}")
-            with col4:
-                if st.button(f"📋", key=f"copy_{idx}"):
-                    pyperclip.copy(message['content'])
-                    st.success("Copied to clipboard!")
+        # Like, Dislike, Re-generate, and Copy to Clipboard buttons
+        col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+        with col1:
+            if st.button(f"👍", key=f"like_{idx}"):
+                if len(st.session_state["feedback"]) <= idx:
+                    st.session_state["feedback"].append("Liked")
+                else:
+                    st.session_state["feedback"][idx] = "Liked"
+                st.success(f"Feedback for message {idx} set to: Liked")
+        with col2:
+            if st.button(f"👎", key=f"dislike_{idx}"):
+                if len(st.session_state["feedback"]) <= idx:
+                    st.session_state["feedback"].append("Disliked")
+                else:
+                    st.session_state["feedback"][idx] = "Disliked"
+                st.success(f"Feedback for message {idx} set to: Disliked")
+        with col3:
+            if st.button(f"🔄", key=f"regenerate_{idx}"):
+                try:
+                    # Re-generate the response
+                    result = qa_chain({"query": st.session_state["messages"][-2]["content"]})
+                    amanda_message = result["result"].strip()
+                    st.session_state["messages"][-1]["content"] = amanda_message
+                except Exception as e:
+                    st.error(f"Error: {e}")
+        with col4:
+            if st.button(f"📋", key=f"copy_{idx}"):
+                pyperclip.copy(message['content'])
+                st.success("Copied to clipboard!")
 
-# Form to handle user input and submission at the bottom
+# Form to handle user input and submission (moved below conversation history)
 st.markdown("---")
 form_key = f"chat_input_{len(st.session_state['messages'])}"
 with st.form(form_key, clear_on_submit=True):
@@ -244,14 +217,10 @@ with st.form(form_key, clear_on_submit=True):
 
 # Handle user input and generate response with RAG
 if submitted and user_input:
-    # Store the user input in session state to retain it across reruns
     st.session_state["messages"].append({"role": "user", "content": user_input})
 
-    # Add delay to simulate processing and improve responsiveness
     with st.spinner("Amanda is thinking..."):
         try:
-            # Simulate a slight delay
-            time.sleep(1)
             result = qa_chain({"query": user_input})
 
             # Validate result before accessing keys
@@ -284,10 +253,13 @@ if submitted and user_input:
                 }
 
         except Exception as e:
-            st.error(f"Error while generating response: {e}")
+            st.error(f"Error: {e}")
 
-    # Scroll to bottom after a new message
-    st.experimental_rerun()  # Ensure new message is reflected and scroll to bottom
+# Display all feedback collected so far
+st.markdown("### User Feedback Summary")
+for i, feedback in enumerate(st.session_state["feedback"]):
+    if feedback:
+        st.markdown(f"Message {i}: {feedback}")
 
 # Footer
 st.markdown("---")
