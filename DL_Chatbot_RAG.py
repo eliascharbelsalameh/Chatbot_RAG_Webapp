@@ -8,8 +8,11 @@ from langchain.embeddings import HuggingFaceEmbeddings          # type: ignore
 from langchain.vectorstores import FAISS                        # type: ignore
 from langchain.chat_models import ChatOpenAI                    # type: ignore
 from langchain.text_splitter import CharacterTextSplitter       # type: ignore
-from langchain.document_loaders import PyPDFLoader              # type: ignore
-import tiktoken  # For token counting                           # type: ignore
+from langchain.docstore.document import Document                # type: ignore
+import pandas as pd
+import docx                                                     # type: ignore
+import tiktoken                                                 # type: ignore
+import pdfplumber                                               # type: ignore    
 import os.path
 
 # Set OpenAI API key from environment variable
@@ -45,35 +48,66 @@ st.markdown(
 st.title("🤖 Chat with Amanda (RAG Enhanced)")
 st.write("Amanda is now enhanced with Retrieval-Augmented Generation (RAG) for better, more accurate responses!")
 
-# Load Documents (PDFs or other formats)
-def read_pdfs_from_directory(directory_path):
+# Load PDF, Word, and Excel Documents from directories (recursively)
+def read_files_from_directory(directory_path):
     documents = []
-    for filename in os.listdir(directory_path):
-        if filename.endswith('.pdf'):
-            file_path = os.path.join(directory_path, filename)
-            loader = PyPDFLoader(file_path)
-            documents.extend(loader.load())
+    for dirpath, dirnames, filenames in os.walk(directory_path):
+        for filename in filenames:
+            file_path = os.path.join(dirpath, filename)
+
+            if filename.endswith('.pdf'):
+                # Extract tables and text using pdfplumber
+                with pdfplumber.open(file_path) as pdf:
+                    for page in pdf.pages:
+                        # Extract plain text from page
+                        text = page.extract_text()
+                        if text:
+                            documents.append(Document(page_content=text, metadata={"source": file_path}))
+                        
+                        # Extract tables from page
+                        tables = page.extract_tables()
+                        for table in tables:
+                            # Convert table to plain text (or structured text for better context)
+                            table_text = pd.DataFrame(table).to_string()
+                            documents.append(Document(page_content=table_text, metadata={"source": file_path, "type": "table"}))
+
+            elif filename.endswith('.docx'):
+                doc = docx.Document(file_path)
+                full_text = []
+                for paragraph in doc.paragraphs:
+                    full_text.append(paragraph.text)
+                documents.append(Document(page_content="\n".join(full_text), metadata={"source": file_path}))
+
+            elif filename.endswith('.xlsx'):
+                # Load Excel files using pandas
+                try:
+                    df = pd.read_excel(file_path)
+                    full_text = df.to_string()
+                    documents.append(Document(page_content=full_text, metadata={"source": file_path}))
+                except Exception as e:
+                    st.error(f"Error reading Excel file {filename}: {e}")
+
     return documents
 
-# Define the directory where your PDFs are stored
-pdf_directory = "C:/Users/elias/OneDrive/Bureau/USEK-Electrical and Electronics Engineer/Semesters/Term-9_Fall-202510/GIN515-Deep Learning/CVs_PDFs"
+# Define the directory where your files are stored
+input_directory = r"C:\Users\elias\OneDrive\Bureau\USEK-Electrical and Electronics Engineer\Semesters\Term-9_Fall-202510\GIN515-Deep Learning-non_repository\Files_dir_RAG"
 
 # Check if the FAISS index exists
 def faiss_index_exists():
     return os.path.exists('vectorstore/db_faiss/index.faiss')
 
-# Setup the vector store with the PDF directory
+# Setup the vector store with the directory and subfolders
 @st.cache_resource
-def setup_vector_store(pdf_directory):
+def setup_vector_store(directory):
     if not faiss_index_exists():
         # Only create the vector store if it doesn't exist
-        documents = read_pdfs_from_directory(pdf_directory)
+        documents = read_files_from_directory(directory)
         text_splitter = CharacterTextSplitter(chunk_size=200, chunk_overlap=20)
         texts = text_splitter.split_documents(documents)
 
         # Create embeddings using Hugging Face model
+        # embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
         embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-        # embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/Paraphrase_multilingual_mpnet_base_v2")
         # embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/All_mpnet_base_v2")
         
         # Create and store vector embeddings
@@ -88,8 +122,8 @@ def setup_vector_store(pdf_directory):
 # Load the vector store
 @st.cache_resource
 def load_vector_store():
+    # embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    # embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/Paraphrase_multilingual_mpnet_base_v2")
     # embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/All_mpnet_base_v2")
     vectorstore = FAISS.load_local('vectorstore/db_faiss', embeddings, allow_dangerous_deserialization=True)
     return vectorstore
@@ -121,13 +155,13 @@ def calculate_cost(num_tokens, model):
         cost_per_1k_tokens = 0.03  # adjust as needed
     else:
         raise ValueError(f"Unsupported model: {model}")
-    
+
     cost = (num_tokens / 1000) * cost_per_1k_tokens
     return cost
 
 # Setup the QA Retrieval Chain
 def create_rag_chain():
-    vectorstore = setup_vector_store(pdf_directory)  # Ensure we create/load vector store
+    vectorstore = setup_vector_store(input_directory)  # Ensure we create/load vector store
 
     # Define the custom prompt template
     template = """
@@ -135,10 +169,9 @@ def create_rag_chain():
     If you don't know the answer, just say that you don't know, don't try to make up an answer.
     
     {context}
-
     Question: {question}
     Answer: """
-    
+
     PROMPT = PromptTemplate(template=template, input_variables=["context", "question"])
 
     # Create retrieval-based QA chain
@@ -161,6 +194,51 @@ if "messages" not in st.session_state:
     ]
 if "feedback" not in st.session_state:
     st.session_state["feedback"] = []  # Store feedback for each response
+
+# Form to handle user input and submission
+with st.form("chat_input", clear_on_submit=True):
+    user_input = st.text_input("You:", key="input", placeholder="Type your message here...")
+    submitted = st.form_submit_button("Send")
+
+# Handle user input and generate response with RAG
+if submitted and user_input:
+    st.session_state["messages"].append({"role": "user", "content": user_input})
+
+    with st.spinner("Amanda is thinking..."):
+        try:
+            result = qa_chain({"query": user_input})
+
+            # Validate result before accessing keys
+            if "result" in result and result["result"]:
+                amanda_message = result["result"].strip()
+            else:
+                st.error("Unexpected response from QA chain.")
+                amanda_message = "Sorry, I couldn't process your query."
+
+            # Calculate tokens and cost
+            num_tokens = num_tokens_from_messages(st.session_state["messages"], model="gpt-3.5-turbo")
+            cost = calculate_cost(num_tokens, model="gpt-3.5-turbo")
+
+            # Append Amanda's response
+            st.session_state["messages"].append({"role": "assistant", "content": amanda_message})
+            st.session_state["feedback"].append(None)  # No feedback initially
+
+            # Store source document if it exists
+            source_documents = result.get("source_documents", [])
+            if source_documents:
+                most_relevant_source = source_documents[0]  # Get the most relevant source
+                metadata = most_relevant_source.metadata
+                filename = os.path.basename(metadata.get("source", "Unknown"))
+                page_number = metadata.get("page", "Unknown")
+                st.session_state["messages"][-1]["source"] = {
+                    "filename": filename,
+                    "page": page_number,
+                    "tokens": num_tokens,
+                    "cost": cost
+                }
+
+        except Exception as e:
+            st.error(f"Error: {e}")
 
 # Display conversation history
 st.markdown("---")
@@ -207,53 +285,6 @@ for idx, message in enumerate(st.session_state["messages"]):
             if st.button(f"📋", key=f"copy_{idx}"):
                 pyperclip.copy(message['content'])
                 st.success("Copied to clipboard!")
-
-# Form to handle user input and submission (moved below conversation history)
-st.markdown("---")
-form_key = f"chat_input_{len(st.session_state['messages'])}"
-with st.form(form_key, clear_on_submit=True):
-    user_input = st.text_input("You:", key="input", placeholder="Type your message here...")
-    submitted = st.form_submit_button("Send")
-
-# Handle user input and generate response with RAG
-if submitted and user_input:
-    st.session_state["messages"].append({"role": "user", "content": user_input})
-
-    with st.spinner("Amanda is thinking..."):
-        try:
-            result = qa_chain({"query": user_input})
-
-            # Validate result before accessing keys
-            if "result" in result and result["result"]:
-                amanda_message = result["result"].strip()
-            else:
-                st.error("Unexpected response from QA chain.")
-                amanda_message = "Sorry, I couldn't process your query."
-
-            # Calculate tokens and cost
-            num_tokens = num_tokens_from_messages(st.session_state["messages"], model="gpt-3.5-turbo")
-            cost = calculate_cost(num_tokens, model="gpt-3.5-turbo")
-
-            # Append Amanda's response
-            st.session_state["messages"].append({"role": "assistant", "content": amanda_message})
-            st.session_state["feedback"].append(None)  # No feedback initially
-
-            # Store source document if it exists
-            source_documents = result.get("source_documents", [])
-            if source_documents:
-                most_relevant_source = source_documents[0]  # Get the most relevant source
-                metadata = most_relevant_source.metadata
-                filename = os.path.basename(metadata.get("source", "Unknown"))
-                page_number = metadata.get("page", "Unknown")
-                st.session_state["messages"][-1]["source"] = {
-                    "filename": filename,
-                    "page": page_number,
-                    "tokens": num_tokens,
-                    "cost": cost
-                }
-
-        except Exception as e:
-            st.error(f"Error: {e}")
 
 # Display all feedback collected so far
 st.markdown("### User Feedback Summary")
