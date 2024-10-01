@@ -302,24 +302,29 @@ if selection == "Amanda":
                 st.markdown(f"""<p style='color: grey;'>Tokens used: <i>{source_info['tokens']}</i>, Cost: <i>${source_info['cost']:.6f}</i></p>""",
                             unsafe_allow_html=True)
 
-            # Like, Dislike, Re-generate, and Copy to Clipboard buttons
-            col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+            # Like, Dislike, Re-generate, and Copy to Clipboard buttons with smaller size and outlined icons
+            col1, col2, col3, col4 = st.columns([0.1, 0.1, 0.1, 0.1])  # Adjusted column sizes to make the buttons smaller
             with col1:
-                if st.button(f"👍", key=f"like_{idx}"):
+                like_button = st.button(f"👍", key=f"like_{idx}")
+                if like_button:
                     if len(st.session_state["feedback"]) <= idx:
                         st.session_state["feedback"].append("Liked")
                     else:
                         st.session_state["feedback"][idx] = "Liked"
                     st.success(f"Feedback for message {idx} set to: Liked")
+
             with col2:
-                if st.button(f"👎", key=f"dislike_{idx}"):
+                dislike_button = st.button(f"👎", key=f"dislike_{idx}")
+                if dislike_button:
                     if len(st.session_state["feedback"]) <= idx:
                         st.session_state["feedback"].append("Disliked")
                     else:
                         st.session_state["feedback"][idx] = "Disliked"
                     st.success(f"Feedback for message {idx} set to: Disliked")
+
             with col3:
-                if st.button(f"🔄", key=f"regenerate_{idx}"):
+                regenerate_button = st.button(f"🔄", key=f"regenerate_{idx}")
+                if regenerate_button:
                     try:
                         # Re-generate the response
                         log_debug(f"Re-generating response for message: {st.session_state['messages'][-2]['content']}")
@@ -329,10 +334,32 @@ if selection == "Amanda":
                     except Exception as e:
                         st.error(f"Error: {e}")
                         log_debug(f"Error during response regeneration: {e}")
+
             with col4:
-                if st.button(f"📋", key=f"copy_{idx}"):
+                copy_button = st.button(f"📋", key=f"copy_{idx}")
+                if copy_button:
                     pyperclip.copy(message['content'])
                     st.success("Copied to clipboard!")
+
+            # CSS Styling to reduce the size of the icons and make them empty inside
+            st.markdown(
+                """
+                <style>
+                .stButton>button {
+                    padding: 5px 10px;
+                    font-size: 18px;
+                    border: 2px solid white;
+                    background: transparent;
+                    color: white;
+                    border-radius: 5px;
+                }
+                .stButton>button:hover {
+                    background: rgba(255, 255, 255, 0.1);
+                }
+                </style>
+                """,
+                unsafe_allow_html=True
+            )
 
 # Debugging Page: Display log messages
 elif selection == "Debugging":
