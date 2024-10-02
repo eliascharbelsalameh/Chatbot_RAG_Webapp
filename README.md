@@ -13,7 +13,7 @@ This application uses **Retrieval-Augmented Generation (RAG)** with **OpenAI's G
 
 ```bash
 streamlit==1.22.0
-openai==0.28.0
+openai==1.51.0
 langchain==0.0.183
 sentence-transformers==2.2.2
 faiss-cpu==1.7.4
