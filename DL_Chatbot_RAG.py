@@ -237,13 +237,11 @@ if selection == "Amanda":
             {"role": "system", "content": "You are Amanda, a helpful assistant."}
         ]
 
-    # Form to handle user input and submission
-    with st.form("chat_input", clear_on_submit=True):
-        user_input = st.text_input("You:", key="input", placeholder="Type your message here...")
-        submitted = st.form_submit_button("Send")
+    # Handle user input and generate response with RAG using st.chat_input
+    user_input = st.chat_input("Type your message here...")
 
-    # Handle user input and generate response with RAG
-    if submitted and user_input:
+    # Proceed if user input is provided
+    if user_input:
         st.session_state["messages"].append({"role": "user", "content": user_input})
 
         with st.spinner("Amanda is thinking..."):
