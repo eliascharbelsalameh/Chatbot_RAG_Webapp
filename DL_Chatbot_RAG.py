@@ -16,17 +16,23 @@ import pdfplumber                                               # type: ignore
 import os.path
 
 # Define pages for the Streamlit application
-PAGES = ["Amanda", "Debugging", "User Feedback"]
+PAGES = ["Amanda", "Debugging", "User Feedback", "Chunks", "Similarity"]
 
 # Set up Streamlit sidebar
 st.sidebar.title("Navigation")
 selection = st.sidebar.radio("Go to", PAGES)
 
-# Initialize debugging log and feedback
+# Initialize debugging log, feedback, chunks, and similarity
 if "debug_log" not in st.session_state:
     st.session_state["debug_log"] = []
 if "feedback" not in st.session_state:
     st.session_state["feedback"] = []  # Store feedback for each response
+if "chunks" not in st.session_state:
+    st.session_state["chunks"] = []  # Store document chunks
+if "last_query" not in st.session_state:
+    st.session_state["last_query"] = None  # Store the last query
+if "similar_chunks" not in st.session_state:
+    st.session_state["similar_chunks"] = []  # Store similarity results
 
 # Function to log debug messages
 def log_debug(message):
@@ -128,7 +134,9 @@ if selection == "Amanda":
     # Check if the FAISS index exists
     def faiss_index_exists():
         log_debug("Checking if FAISS index exists...")
-        exists = os.path.exists('vectorstore/db_faiss/index.faiss')
+        index_file = 'vectorstore/db_faiss/index.faiss'
+        metadata_file = 'vectorstore/db_faiss/docstore.pkl'  # Replace with appropriate file if needed
+        exists = os.path.exists(index_file) and os.path.exists(metadata_file)
         log_debug(f"FAISS index exists: {exists}")
         return exists
 
@@ -136,34 +144,18 @@ if selection == "Amanda":
     @st.cache_resource
     def setup_vector_store(directory):
         if not faiss_index_exists():
-            log_debug("FAISS index not found, creating new vector store...")
-            with st.spinner("Reading and processing documents..."):
-                documents = read_files_from_directory(directory)
-
+            log_debug("FAISS index not found or corrupted, creating new vector store...")
+            documents = read_files_from_directory(input_directory)  # Re-read documents
             text_splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=50)
             texts = text_splitter.split_documents(documents)
-            log_debug(f"Split documents into {len(texts)} chunks.")
 
-            # Create embeddings using Hugging Face model
-            try:
-                log_debug("Creating embeddings...")
-                embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
-            except Exception as e:
-                st.error(f"Error creating embeddings: {e}")
-                log_debug(f"Error creating embeddings: {e}")
-                raise
+            # Store chunks in session state
+            st.session_state["chunks"] = texts
 
-            # Create and store vector embeddings
-            try:
-                with st.spinner("Creating and saving vector embeddings..."):
-                    vectorstore = FAISS.from_documents(texts, embeddings)
-                    vectorstore.save_local('vectorstore/db_faiss')
-                    log_debug("Vector store created and saved successfully.")
-            except Exception as e:
-                st.error(f"Error creating or saving vector store: {e}")
-                log_debug(f"Error creating or saving vector store: {e}")
-                raise
-
+            embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
+            vectorstore = FAISS.from_documents(texts, embeddings)
+            vectorstore.save_local('vectorstore/db_faiss')
+            log_debug("Vector store created and saved successfully.")
             return vectorstore
         else:
             log_debug("Loading existing FAISS vector store...")
@@ -224,8 +216,8 @@ if selection == "Amanda":
             log_debug("RAG chain created successfully.")
             return qa_chain
         except Exception as e:
-            st.error(f"Error creating RAG chain: {e}")
-            log_debug(f"Error creating RAG chain: {e}")
+            st.error(f"Error creating RAG chain: {str(e)}")
+            log_debug(f"Error creating RAG chain: {str(e)}")
             raise
 
     # Initialize the QA chain (can take time, so it's cached)
@@ -243,6 +235,7 @@ if selection == "Amanda":
     # Proceed if user input is provided
     if user_input:
         st.session_state["messages"].append({"role": "user", "content": user_input})
+        st.session_state["last_query"] = user_input  # Store the last query
 
         with st.spinner("Amanda is thinking..."):
             try:
@@ -279,6 +272,11 @@ if selection == "Amanda":
                         "cost": cost,
                     }
                     log_debug(f"Source document for response: {filename}, page {page_number}")
+
+                # Find the top 3 similar chunks to the last query
+                retriever = qa_chain.retriever
+                similar_docs = retriever.get_relevant_documents(user_input)[:3]
+                st.session_state["similar_chunks"] = [(doc, doc.metadata.get("score", 0)) for doc in similar_docs]
 
             except Exception as e:
                 st.error(f"Error: {e}")
@@ -373,6 +371,42 @@ elif selection == "User Feedback":
     for i, feedback in enumerate(st.session_state["feedback"]):
         if feedback:
             st.markdown(f"Message {i}: {feedback}")
+
+# Chunks Page: Display chunk settings and all available chunks
+elif selection == "Chunks":
+    st.title("Document Chunks")
+    
+    # Display chunk size and overlap
+    chunk_size = 500
+    chunk_overlap = 50
+    st.write(f"**Chunk Size:** {chunk_size}")
+    st.write(f"**Chunk Overlap:** {chunk_overlap}")
+
+    # Display all chunks
+    if st.session_state["chunks"]:
+        for idx, chunk in enumerate(st.session_state["chunks"]):
+            st.markdown(f"**Chunk {idx + 1}:**")
+            st.text(chunk.page_content)
+    else:
+        st.write("No chunks available. Please load documents.")
+
+# Similarity Page: Display the top 3 most similar chunks to the last query
+elif selection == "Similarity":
+    st.title("Top 3 Similar Chunks")
+
+    # Display the last user query
+    if st.session_state["last_query"]:
+        st.write(f"**Last Query:** {st.session_state['last_query']}")
+
+        # Display top 3 most similar chunks
+        if st.session_state["similar_chunks"]:
+            for idx, (chunk, score) in enumerate(st.session_state["similar_chunks"]):
+                st.markdown(f"**Similar Chunk {idx + 1} (Score: {score:.4f}):**")
+                st.text(chunk.page_content)
+        else:
+            st.write("No similar chunks available.")
+    else:
+        st.write("No query has been made yet.")
 
 # Footer
 st.markdown("---")
