@@ -1,6 +1,6 @@
 import streamlit as st
 import openai
-import os
+import os, os.path
 import pyperclip  # for copy to clipboard functionality         # type: ignore
 from langchain import PromptTemplate                            # type: ignore
 from langchain.chains import RetrievalQA                        # type: ignore
@@ -12,8 +12,12 @@ from langchain.docstore.document import Document                # type: ignore
 import pandas as pd
 import docx                                                     # type: ignore
 import tiktoken                                                 # type: ignore
-import pdfplumber                                               # type: ignore    
-import os.path
+import pdfplumber                                               # type: ignore
+
+# TODO: fix page unknown issue
+# TODO: fix similarity score
+# TODO: test other chunking methods
+# TODO: fix setup_vector_store()
 
 # Define pages for the Streamlit application
 PAGES = ["Amanda", "Debugging", "User Feedback", "Chunks", "Similarity"]
@@ -131,49 +135,45 @@ if selection == "Amanda":
     # Define the directory where your files are stored
     input_directory = r"C:\Users\elias\OneDrive\Bureau\USEK-Electrical and Electronics Engineer\Semesters\Term-9_Fall-202510\GIN515-Deep Learning-non_repository\Files_dir_RAG"
 
-    # Check if the FAISS index exists
+    # Check if the FAISS index files exist and are not corrupted
     def faiss_index_exists():
-        log_debug("Checking if FAISS index exists...")
         index_file = 'vectorstore/db_faiss/index.faiss'
         metadata_file = 'vectorstore/db_faiss/docstore.pkl'  # Replace with appropriate file if needed
-        exists = os.path.exists(index_file) and os.path.exists(metadata_file)
-        log_debug(f"FAISS index exists: {exists}")
-        return exists
+        return os.path.exists(index_file) and os.path.exists(metadata_file)
+
+    # Load the vector store, and recreate if corrupted
+    @st.cache_resource
+    def load_vector_store():
+        if faiss_index_exists():
+            try:
+                log_debug("Loading existing FAISS vector store...")
+                embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
+                vectorstore = FAISS.load_local('vectorstore/db_faiss', embeddings, allow_dangerous_deserialization=True)
+                log_debug("Vector store loaded successfully.")
+                return vectorstore
+            except Exception as e:
+                st.error("Existing FAISS vector store is corrupted. Recreating it...")
+                log_debug(f"Error loading existing vector store: {e}")
+        
+        # Recreate vector store if loading fails
+        log_debug("Creating new FAISS vector store...")
+        documents = read_files_from_directory(input_directory)  # Re-read documents
+        text_splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+        texts = text_splitter.split_documents(documents)
+
+        # Store chunks in session state
+        st.session_state["chunks"] = texts
+
+        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
+        vectorstore = FAISS.from_documents(texts, embeddings)
+        vectorstore.save_local('vectorstore/db_faiss')
+        log_debug("Vector store created and saved successfully.")
+        return vectorstore
 
     # Setup the vector store with the directory and subfolders
     @st.cache_resource
     def setup_vector_store(directory):
-        if not faiss_index_exists():
-            log_debug("FAISS index not found or corrupted, creating new vector store...")
-            documents = read_files_from_directory(input_directory)  # Re-read documents
-            text_splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-            texts = text_splitter.split_documents(documents)
-
-            # Store chunks in session state
-            st.session_state["chunks"] = texts
-
-            embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
-            vectorstore = FAISS.from_documents(texts, embeddings)
-            vectorstore.save_local('vectorstore/db_faiss')
-            log_debug("Vector store created and saved successfully.")
-            return vectorstore
-        else:
-            log_debug("Loading existing FAISS vector store...")
-            return load_vector_store()
-
-    # Load the vector store
-    @st.cache_resource
-    def load_vector_store():
-        try:
-            log_debug("Loading vector store...")
-            embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
-            vectorstore = FAISS.load_local('vectorstore/db_faiss', embeddings, allow_dangerous_deserialization=True)
-            log_debug("Vector store loaded successfully.")
-            return vectorstore
-        except Exception as e:
-            st.error(f"Error loading vector store: {e}")
-            log_debug(f"Error loading vector store: {e}")
-            raise
+        return load_vector_store()
 
     # Function to calculate cost
     def calculate_cost(num_tokens, model):
