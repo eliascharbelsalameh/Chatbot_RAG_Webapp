@@ -1,22 +1,21 @@
 import streamlit as st
 import openai
 import os, os.path
-import pyperclip  # for copy to clipboard functionality         # type: ignore
-from langchain import PromptTemplate                            # type: ignore
-from langchain.chains import RetrievalQA                        # type: ignore
-from langchain.embeddings import HuggingFaceEmbeddings          # type: ignore
-from langchain.vectorstores import FAISS                        # type: ignore
-from langchain.chat_models import ChatOpenAI                    # type: ignore
-from langchain.text_splitter import CharacterTextSplitter       # type: ignore
-from langchain.docstore.document import Document                # type: ignore
+import pyperclip # type: ignore
+from langchain import PromptTemplate # type: ignore
+from langchain.chains import RetrievalQA # type: ignore
+from langchain.embeddings import HuggingFaceEmbeddings # type: ignore
+from langchain.vectorstores import FAISS # type: ignore
+from langchain.chat_models import ChatOpenAI # type: ignore
+from langchain.text_splitter import CharacterTextSplitter, RecursiveCharacterTextSplitter # type: ignore
+from langchain.docstore.document import Document # type: ignore
 import pandas as pd
-import docx                                                     # type: ignore
-import tiktoken                                                 # type: ignore
-import pdfplumber                                               # type: ignore
+import docx # type: ignore
+import tiktoken # type: ignore
+import pdfplumber # type: ignore
 
 # TODO: fix page unknown issue
 # TODO: fix similarity score
-# TODO: test other chunking methods
 # TODO: fix setup_vector_store()
 
 # Define pages for the Streamlit application
@@ -141,24 +140,37 @@ if selection == "Amanda":
         metadata_file = 'vectorstore/db_faiss/docstore.pkl'  # Replace with appropriate file if needed
         return os.path.exists(index_file) and os.path.exists(metadata_file)
 
-    # Load the vector store, and recreate if corrupted
+    # Function to load the vector store, only recreate if it is corrupted or missing
     @st.cache_resource
     def load_vector_store():
         if faiss_index_exists():
             try:
                 log_debug("Loading existing FAISS vector store...")
+                # Loading the vector store with Hugging Face Embeddings
                 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
                 vectorstore = FAISS.load_local('vectorstore/db_faiss', embeddings, allow_dangerous_deserialization=True)
                 log_debug("Vector store loaded successfully.")
                 return vectorstore
+            
             except Exception as e:
                 st.error("Existing FAISS vector store is corrupted. Recreating it...")
                 log_debug(f"Error loading existing vector store: {e}")
-        
-        # Recreate vector store if loading fails
+
+        return recreate_vector_store()
+
+    # Function to recreate the vector store by processing files again
+    def recreate_vector_store():
         log_debug("Creating new FAISS vector store...")
-        documents = read_files_from_directory(input_directory)  # Re-read documents
-        text_splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+
+        # Read files and process documents
+        documents = read_files_from_directory(input_directory)
+
+        # Use RecursiveCharacterTextSplitter instead of CharacterTextSplitter
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=500,          # Define the desired chunk size
+            chunk_overlap=50,        # Overlap between chunks for better context
+            separators=["\n\n", "\n", ".", " "]  # Define how to split: first by double newlines, then newlines, then periods, then spaces
+        )
         texts = text_splitter.split_documents(documents)
 
         # Store chunks in session state
@@ -170,7 +182,7 @@ if selection == "Amanda":
         log_debug("Vector store created and saved successfully.")
         return vectorstore
 
-    # Setup the vector store with the directory and subfolders
+    # Setup the vector store: load if exists, recreate if necessary
     @st.cache_resource
     def setup_vector_store(directory):
         return load_vector_store()
