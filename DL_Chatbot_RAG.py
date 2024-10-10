@@ -14,9 +14,9 @@ import docx # type: ignore
 import tiktoken # type: ignore
 import pdfplumber # type: ignore
 
-# TODO: fix page unknown issue
 # TODO: fix similarity score
 # TODO: fix setup_vector_store()
+# TODO: add text-to-speech
 
 # Define pages for the Streamlit application
 PAGES = ["Amanda", "Debugging", "User Feedback", "Chunks", "Similarity"]
@@ -90,27 +90,27 @@ if selection == "Amanda":
                     if filename.endswith('.pdf'):
                         # Extract tables and text using pdfplumber
                         with pdfplumber.open(file_path) as pdf:
-                            for page in pdf.pages:
+                            for page_number, page in enumerate(pdf.pages, start=1):
                                 # Extract plain text from page
                                 text = page.extract_text()
                                 if text:
-                                    documents.append(Document(page_content=text, metadata={"source": file_path}))
-                                    log_debug(f"Extracted text from PDF: {filename}")
+                                    documents.append(Document(page_content=text, metadata={"source": filename, "page": page_number}))
+                                    log_debug(f"Extracted text from PDF: {filename}, Page: {page_number}")
 
                                 # Extract tables from page
                                 tables = page.extract_tables()
                                 for table in tables:
                                     # Convert table to plain text (or structured text for better context)
                                     table_text = pd.DataFrame(table).to_string()
-                                    documents.append(Document(page_content=table_text, metadata={"source": file_path, "type": "table"}))
-                                    log_debug(f"Extracted table from PDF: {filename}")
+                                    documents.append(Document(page_content=table_text, metadata={"source": filename, "page": page_number, "type": "table"}))
+                                    log_debug(f"Extracted table from PDF: {filename}, Page: {page_number}")
 
                     elif filename.endswith('.docx'):
                         doc = docx.Document(file_path)
                         full_text = []
                         for paragraph in doc.paragraphs:
                             full_text.append(paragraph.text)
-                        documents.append(Document(page_content="\n".join(full_text), metadata={"source": file_path}))
+                        documents.append(Document(page_content="\n".join(full_text), metadata={"source": filename}))
                         log_debug(f"Extracted text from Word document: {filename}")
 
                     elif filename.endswith('.xlsx'):
@@ -118,7 +118,7 @@ if selection == "Amanda":
                         try:
                             df = pd.read_excel(file_path)
                             full_text = df.to_string()
-                            documents.append(Document(page_content=full_text, metadata={"source": file_path}))
+                            documents.append(Document(page_content=full_text, metadata={"source": filename}))
                             log_debug(f"Extracted data from Excel file: {filename}")
                         except Exception as e:
                             st.error(f"Error reading Excel file {filename}: {e}")
@@ -164,23 +164,39 @@ if selection == "Amanda":
 
         # Read files and process documents
         documents = read_files_from_directory(input_directory)
+        log_debug(f"Total documents processed: {len(documents)}")
+
+        if not documents:
+            st.error("No documents were loaded. Please check the input directory.")
+            return None  # Avoid proceeding if no documents are loaded
 
         # Use RecursiveCharacterTextSplitter instead of CharacterTextSplitter
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=500,          # Define the desired chunk size
             chunk_overlap=50,        # Overlap between chunks for better context
             separators=["\n\n", "\n", ".", " "]  # Define how to split: first by double newlines, then newlines, then periods, then spaces
-        )
+        )  
         texts = text_splitter.split_documents(documents)
+        log_debug(f"Text splitter created {len(texts)} chunks.")
+        
+        if not texts:
+            st.error("Text splitting failed. No chunks were created.")
+            return None  # Avoid proceeding if no chunks were created
 
         # Store chunks in session state
         st.session_state["chunks"] = texts
 
+        # Initialize embeddings and FAISS vector store
         embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
-        vectorstore = FAISS.from_documents(texts, embeddings)
-        vectorstore.save_local('vectorstore/db_faiss')
-        log_debug("Vector store created and saved successfully.")
-        return vectorstore
+        try:
+            vectorstore = FAISS.from_documents(texts, embeddings)
+            vectorstore.save_local('vectorstore/db_faiss')
+            log_debug("Vector store created and saved successfully.")
+            return vectorstore
+        except Exception as e:
+            st.error(f"Error creating FAISS vector store: {str(e)}")
+            log_debug(f"Error creating FAISS vector store: {str(e)}")
+            return None
 
     # Setup the vector store: load if exists, recreate if necessary
     @st.cache_resource
@@ -262,10 +278,6 @@ if selection == "Amanda":
                     st.error("Unexpected response from QA chain.")
                     amanda_message = "Sorry, I couldn't process your query."
 
-                # Calculate tokens and cost
-                num_tokens = len(user_input) + len(amanda_message)  # Simplified token calculation
-                cost = calculate_cost(num_tokens, model="gpt-3.5-turbo")
-
                 # Append Amanda's response
                 st.session_state["messages"].append({"role": "assistant", "content": amanda_message})
                 st.session_state["feedback"].append(None)  # No feedback initially
@@ -277,18 +289,18 @@ if selection == "Amanda":
                     metadata = most_relevant_source.metadata
                     filename = os.path.basename(metadata.get("source", "Unknown"))
                     page_number = metadata.get("page", "Unknown")
+                    
+                    # Simplified token calculation for cost
+                    num_tokens = len(user_input) + len(amanda_message)  # Adjust this as needed
+                    cost = calculate_cost(num_tokens, model="gpt-3.5-turbo")
+
                     st.session_state["messages"][-1]["source"] = {
                         "filename": filename,
                         "page": page_number,
-                        "tokens": num_tokens,
-                        "cost": cost,
+                        "tokens": num_tokens,  # Add 'tokens' to the dictionary
+                        "cost": cost,          # Add 'cost' to the dictionary
                     }
                     log_debug(f"Source document for response: {filename}, page {page_number}")
-
-                # Find the top 3 similar chunks to the last query
-                retriever = qa_chain.retriever
-                similar_docs = retriever.get_relevant_documents(user_input)[:3]
-                st.session_state["similar_chunks"] = [(doc, doc.metadata.get("score", 0)) for doc in similar_docs]
 
             except Exception as e:
                 st.error(f"Error: {e}")
@@ -305,10 +317,14 @@ if selection == "Amanda":
             # Display the most relevant source information if available
             if "source" in message:
                 source_info = message["source"]
-                st.markdown(f"""<p style='color: grey;'>Source: File: <i>{source_info['filename']}</i>, Page: <i>{source_info['page']}</i></p>""",
-                            unsafe_allow_html=True)
-                st.markdown(f"""<p style='color: grey;'>Tokens used: <i>{source_info['tokens']}</i>, Cost: <i>${source_info['cost']:.6f}</i></p>""",
-                            unsafe_allow_html=True)
+                filename = source_info.get("filename", "Unknown")
+                page = source_info.get("page", "Unknown")
+                tokens = source_info.get("tokens", "N/A")  # Safeguard to prevent KeyError
+                cost = source_info.get("cost", 0.0)  # Safeguard to prevent KeyError
+
+                st.markdown(f"""<p style='color: grey;'>Source: File: <i>{filename}</i>, Page: <i>{page}</i></p>""", unsafe_allow_html=True)
+                st.markdown(f"""<p style='color: grey;'>Tokens used: <i>{tokens}</i>, Cost: <i>${cost:.6f}</i></p>""", unsafe_allow_html=True)
+
 
             # Like, Dislike, Re-generate, and Copy to Clipboard buttons with smaller size and outlined icons
             col1, col2, col3, col4 = st.columns([0.1, 0.1, 0.1, 0.1])  # Adjusted column sizes to make the buttons smaller
@@ -397,7 +413,9 @@ elif selection == "Chunks":
     # Display all chunks
     if st.session_state["chunks"]:
         for idx, chunk in enumerate(st.session_state["chunks"]):
-            st.markdown(f"**Chunk {idx + 1}:**")
+            source = chunk.metadata.get("source", "Unknown")
+            page = chunk.metadata.get("page", "N/A")
+            st.markdown(f"**Chunk {idx + 1} from {source}, Page: {page}:**")
             st.text(chunk.page_content)
     else:
         st.write("No chunks available. Please load documents.")
@@ -413,7 +431,9 @@ elif selection == "Similarity":
         # Display top 3 most similar chunks
         if st.session_state["similar_chunks"]:
             for idx, (chunk, score) in enumerate(st.session_state["similar_chunks"]):
-                st.markdown(f"**Similar Chunk {idx + 1} (Score: {score:.4f}):**")
+                source = chunk.metadata.get("source", "Unknown")
+                page = chunk.metadata.get("page", "N/A")
+                st.markdown(f"**Similar Chunk {idx + 1} (Score: {score:.4f}) from {source}, Page: {page}:**")
                 st.text(chunk.page_content)
         else:
             st.write("No similar chunks available.")
