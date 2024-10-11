@@ -20,6 +20,10 @@ from langdetect import detect, LangDetectException # type: ignore
 # TODO: fix similarity score
 # TODO: fix setup_vector_store()
 # TODO: relocate vectorstore FAISS to GIN515-Deep Learning
+# TODO: add groq-whisper3
+# TODO: add memory
+# TODO: add new chat
+# TODO: enhance tables
 
 used_model = "gpt-4-turbo"
 
@@ -261,7 +265,7 @@ if selection == "Chat with Amanda":
         try:
             vectorstore = setup_vector_store(input_directory)
             template = """
-            Use the following pieces of context to answer the question at the end. 
+            Use the following pieces of context to answer the question at the end.
             If you don't know the answer, just say that you don't know, don't try to make up an answer.
             {context}
             Question: {question}
