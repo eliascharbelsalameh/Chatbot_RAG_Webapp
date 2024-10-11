@@ -21,6 +21,8 @@ from langdetect import detect, LangDetectException # type: ignore
 # TODO: fix setup_vector_store()
 # TODO: relocate vectorstore FAISS to GIN515-Deep Learning
 
+used_model = "gpt-4-turbo"
+
 # Initialize pygame mixer for TTS playback
 pygame.mixer.init()
 
@@ -73,10 +75,10 @@ def play_audio(text, file_name):
         st.error(f"Error playing audio: {e}")
 
 # Define pages for the Streamlit application
-PAGES = ["Amanda", "Debugging", "User Feedback", "Chunks"]
+PAGES = ["Chat with Amanda", "Debugging Logs", "User Feedback", "All Chunks"]
 
 # Set up Streamlit sidebar
-st.sidebar.title("Navigation")
+st.sidebar.title("Menu")
 selection = st.sidebar.radio("Go to", PAGES)
 
 # Initialize debugging log, feedback, chunks, and similarity
@@ -94,7 +96,7 @@ def log_debug(message):
     st.session_state["debug_log"].append(message)
 
 # Amanda Page: Main chat interface
-if selection == "Amanda":
+if selection == "Chat with Amanda":
 
     # Set OpenAI API key from environment variable
     openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -242,13 +244,15 @@ if selection == "Amanda":
     def setup_vector_store(directory):
         return load_vector_store()
 
-    def calculate_cost(num_tokens, model="gpt-3.5-turbo"):
-        if model == "gpt-3.5-turbo":
-            cost_per_1k_tokens = 0.002  # cost per 1k tokens for gpt-3.5-turbo
-        elif model == "gpt-4":
-            cost_per_1k_tokens = 0.03  # adjust as needed
+    def calculate_cost(num_tokens, model=used_model):
+        if model == "gpt-4":
+            cost_per_1k_tokens = 0.03
+        elif model == "gpt-4-turbo":
+            cost_per_1k_tokens = 0.012
+        elif model == "gpt-3.5-turbo":
+            cost_per_1k_tokens = 0.002
         else:
-            raise ValueError(f"Unsupported model: {model}") 
+            raise ValueError(f"Unsupported model: {model}")
         cost = (num_tokens / 1000) * cost_per_1k_tokens
         return cost
 
@@ -265,7 +269,7 @@ if selection == "Amanda":
 
             PROMPT = PromptTemplate(template=template, input_variables=["context", "question"])
             qa_chain = RetrievalQA.from_chain_type(
-                llm=ChatOpenAI(temperature=0, model_name="gpt-3.5-turbo"),
+                llm=ChatOpenAI(temperature=0, model_name=used_model),
                 chain_type="stuff",
                 retriever=vectorstore.as_retriever(),
                 return_source_documents=True,
@@ -311,7 +315,7 @@ if selection == "Amanda":
 
                         # Simplified token calculation for cost
                         num_tokens = len(user_input) + len(amanda_message)  # Adjust this as needed
-                        cost = calculate_cost(num_tokens, model="gpt-3.5-turbo")
+                        cost = calculate_cost(num_tokens, model=used_model)
 
                         # Store the response and its source info along with the cost
                         st.session_state["messages"].append({
@@ -332,7 +336,7 @@ if selection == "Amanda":
                             "role": "assistant", 
                             "content": amanda_message,
                             "tokens": len(user_input) + len(amanda_message),
-                            "cost": calculate_cost(len(user_input) + len(amanda_message), model="gpt-3.5-turbo")
+                            "cost": calculate_cost(len(user_input) + len(amanda_message), model=used_model)
                         })
 
             except Exception as e:
@@ -404,7 +408,7 @@ if selection == "Amanda":
                     st.success("Copied to clipboard!")
 
 # Debugging Page: Display log messages
-elif selection == "Debugging":
+elif selection == "Debugging Logs":
     st.title("Debugging Logs")
     st.markdown("### Debugging Information")
     for log_message in st.session_state["debug_log"]:
@@ -419,7 +423,7 @@ elif selection == "User Feedback":
             st.markdown(f"Message {i}: {feedback}")
 
 # Chunks Page: Display chunk settings and all available chunks
-elif selection == "Chunks":
+elif selection == "All Chunks":
     st.title("Document Chunks")
     chunk_size = 500
     chunk_overlap = 50
