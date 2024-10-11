@@ -2,7 +2,7 @@
 
 ### **Overview**
 
-This application uses **Retrieval-Augmented Generation (RAG)** with **OpenAI's GPT-3.5** and **FAISS** for document retrieval. It allows you to query a set of documents (PDFs, Word documents, and Excel files) to get relevant answers based on the content. Additionally, the application provides cost calculations and token usage details for each response, improving transparency of API usage.
+This application leverages **Retrieval-Augmented Generation (RAG)** with **OpenAI's GPT-4-turbo** and **FAISS** for document retrieval, providing an AI-powered assistant, Amanda, who can answer questions based on the content of documents. The application supports **PDF**, **Word (DOCX)**, and **Excel (XLSX)** files. Additionally, it offers token usage and cost calculations for each response, enhancing transparency of API usage.
 
 ### **Prerequisites**
 
@@ -22,12 +22,15 @@ tiktoken==0.4.0
 docx==0.0.1
 pdfplumber==0.5.28
 pandas==1.5.3
+gtts==2.2.3
+pygame==2.1.2
+langdetect==1.0.9
 ```
 
 You can install these dependencies via **pip**:
 
 ```bash
-pip install streamlit openai langchain sentence-transformers faiss-cpu pyperclip tiktoken docx pdfplumber pandas
+pip install streamlit openai langchain sentence-transformers faiss-cpu pyperclip tiktoken docx pdfplumber pandas gtts pygame langdetect
 ```
 
 ### **OpenAI Setup**
@@ -57,7 +60,7 @@ project_folder/
 ├── app.py
 ├── vectorstore/
 │   ├── db_faiss/  (Generated after first run)
-└── Files_dir_RAG/ 
+└── Files_dir_RAG/
 ```
 
 2. Place your documents in the `Files_dir_RAG/` directory.
@@ -75,33 +78,40 @@ streamlit run app.py
 
 ### **Features**
 
-- **Retrieval-Augmented Generation (RAG)**: Combines GPT-3.5 with document retrieval for more accurate answers based on the provided documents.
+- **Retrieval-Augmented Generation (RAG)**: Combines **GPT-4-turbo** with document retrieval for more accurate answers based on the content.
 - **FAISS Vector Store**: Uses FAISS to index the documents, enabling efficient similarity search for relevant information.
-- **Multi-format Document Support**: The app now supports **PDF**, **Word (.docx)**, and **Excel (.xlsx)** files for richer document-based responses.
-- **Multilingual Support**: Amanda can understand and respond in multiple languages, enhancing its versatility for diverse users and multilingual documents.
-- **Token Usage and Cost Display**: The app calculates and displays the number of tokens used and the associated cost for each response, providing insights into the API usage.
-- **Feedback Mechanism**: Users can like or dislike responses, providing a simple feedback mechanism.
-- **Re-generate and Copy to Clipboard**: Allows re-generating responses and copying them to the clipboard for convenience.
+- **Multi-format Document Support**: The app supports **PDF**, **Word (.docx)**, and **Excel (.xlsx)** files, providing rich document-based responses.
+- **Multilingual Support**: Amanda can detect and respond in multiple languages, making it ideal for multilingual documents and diverse user bases.
+- **Token Usage and Cost Display**: The app calculates and displays token usage and the associated cost for each response, providing insight into the API usage.
+- **Text-to-Speech Functionality**: Amanda’s replies can be converted to speech using **gTTS**, with playback handled by **Pygame** for a more interactive experience.
+- **Feedback Mechanism**: Users can like or dislike responses, providing a simple feedback mechanism to improve interactions.
+- **Re-generate and Copy to Clipboard**: Allows users to regenerate responses or copy them to the clipboard for convenience.
+- **Document Chunking**: Automatically splits large documents into chunks for better retrieval and response accuracy, with configurable chunk size and overlap.
+- **Debugging Logs**: Logs activities like document processing and vector store creation, aiding in debugging.
 
 ### **New Updates**
 
-- **New Document Formats Supported**: You can now upload Word and Excel documents in addition to PDFs.
-- **Multilingual Feature**: Amanda is now multilingual, allowing it to answer questions and retrieve information in various languages.
-- **UI Enhancements**: The "like," "dislike," "re-generate," and "copy" buttons are now smaller and have an outlined appearance, enhancing the interface for a cleaner look.
-- **Improved Logging and Debugging**: Added logs for reading documents, processing files, and creating/loading FAISS vector stores for easier debugging.
-- **Caching Enhancements**: Cached the loading and creation of the vector store to improve application performance.
+- **Text-to-Speech**: Amanda now supports text-to-speech using **gTTS**, allowing users to listen to responses.
+- **Chunking Configurations**: You can configure chunk size and overlap for better control over document splitting and retrieval.
+- **Improved Multilingual Detection**: Amanda can now detect and respond in different languages, based on the input text.
+- **Caching Enhancements**: Improved caching of the vector store and document chunks to speed up performance.
+- **UI Improvements**: Better button placement and enhanced look for interaction buttons (like, dislike, re-generate, etc.).
 
-### **Note**
+### **Token Calculation and Cost Transparency**
 
-- The FAISS index is created on the first run and stored in the `vectorstore/db_faiss/` directory.
-- For future runs, the app will load the pre-existing FAISS index, speeding up startup time.
-- The **tiktoken** library is used to count tokens and calculate costs, ensuring accurate billing information.
+The app provides detailed insights into token usage for each interaction. Based on the model used, token costs are calculated as follows:
+
+- **GPT-4**: $0.03 per 1000 tokens
+- **GPT-4-turbo**: $0.012 per 1000 tokens
+- **GPT-3.5-turbo**: $0.002 per 1000 tokens
+
+This feature helps in tracking API usage costs for each session.
 
 ### **Troubleshooting**
 
 - **Error: "expected string or buffer"**: Ensure that the messages passed to the tokenizer are valid strings. The code has been updated with type checks to handle such issues.
-- If the FAISS index needs to be rebuilt (e.g., if documents have changed), you can delete the `db_faiss` folder and restart the app to recreate the index.
-- **Excel File Issues**: If you encounter an error reading Excel files, ensure that the file is not open in another program and is in a supported format.
+- If the FAISS index needs to be rebuilt (e.g., if documents have changed), delete the `db_faiss` folder and restart the app to recreate the index.
+- **Excel File Issues**: Ensure that Excel files are not open in another program and are in a supported format.
 
 ### **Environment Configuration (Optional)**
 
@@ -126,4 +136,4 @@ from dotenv import load_dotenv
 load_dotenv()
 ```
 
-With these steps, you can manage your API keys more securely and conveniently.
+This allows you to manage API keys more securely.
