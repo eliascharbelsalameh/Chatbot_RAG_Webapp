@@ -29,6 +29,19 @@ audio_folder = "audio_files"
 if not os.path.exists(audio_folder):
     os.makedirs(audio_folder)
 
+def clear_audio_files():
+    if os.path.exists(audio_folder):
+        for file_name in os.listdir(audio_folder):
+            file_path = os.path.join(audio_folder, file_name)
+            try:
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+            except Exception as e:
+                print(f"Error deleting file {file_path}: {e}")
+
+
+clear_audio_files()
+
 def detect_language(text):
     try:
         # Detect the language of the input text
@@ -60,7 +73,7 @@ def play_audio(text, file_name):
         st.error(f"Error playing audio: {e}")
 
 # Define pages for the Streamlit application
-PAGES = ["Amanda", "Debugging", "User Feedback", "Chunks", "Similarity"]
+PAGES = ["Amanda", "Debugging", "User Feedback", "Chunks"]
 
 # Set up Streamlit sidebar
 st.sidebar.title("Navigation")
@@ -75,8 +88,6 @@ if "chunks" not in st.session_state:
     st.session_state["chunks"] = []  # Store document chunks
 if "last_query" not in st.session_state:
     st.session_state["last_query"] = None  # Store the last query
-if "similar_chunks" not in st.session_state:
-    st.session_state["similar_chunks"] = []  # Store similarity results
 
 # Function to log debug messages
 def log_debug(message):
@@ -231,13 +242,13 @@ if selection == "Amanda":
     def setup_vector_store(directory):
         return load_vector_store()
 
-    def calculate_cost(num_tokens, model):
+    def calculate_cost(num_tokens, model="gpt-3.5-turbo"):
         if model == "gpt-3.5-turbo":
-            cost_per_1k_tokens = 0.002
+            cost_per_1k_tokens = 0.002  # cost per 1k tokens for gpt-3.5-turbo
         elif model == "gpt-4":
-            cost_per_1k_tokens = 0.03
+            cost_per_1k_tokens = 0.03  # adjust as needed
         else:
-            raise ValueError(f"Unsupported model: {model}")
+            raise ValueError(f"Unsupported model: {model}") 
         cost = (num_tokens / 1000) * cost_per_1k_tokens
         return cost
 
@@ -278,16 +289,52 @@ if selection == "Amanda":
 
     if user_input:
         st.session_state["messages"].append({"role": "user", "content": user_input})
-        st.session_state["last_query"] = user_input
+        st.session_state["last_query"] = user_input  # Store the last query
 
         with st.spinner("Amanda is thinking..."):
             try:
+                # Query the RAG chain to get the response and source documents
                 result = qa_chain({"query": user_input})
+
+                # Generate the response with token calculation
                 if "result" in result and result["result"]:
                     amanda_message = result["result"].strip()
-                    st.session_state["messages"].append({"role": "assistant", "content": amanda_message})
-                else:
-                    st.error("Unexpected response from QA chain.")
+
+                    # Extract the most relevant source document metadata
+                    source_documents = result.get("source_documents", [])
+                    if source_documents:
+                        most_relevant_source = source_documents[0]  # Get the most relevant source document
+                        metadata = most_relevant_source.metadata
+                        filename = metadata.get("source", "Unknown")
+                        page = metadata.get("page", "Unknown")
+                        chunk_type = metadata.get("type", "text")
+
+                        # Simplified token calculation for cost
+                        num_tokens = len(user_input) + len(amanda_message)  # Adjust this as needed
+                        cost = calculate_cost(num_tokens, model="gpt-3.5-turbo")
+
+                        # Store the response and its source info along with the cost
+                        st.session_state["messages"].append({
+                            "role": "assistant", 
+                            "content": amanda_message, 
+                            "source": {
+                                "filename": filename,
+                                "page": page,
+                                "type": chunk_type
+                            },
+                            "tokens": num_tokens,
+                            "cost": cost
+                        })
+
+                    # Handle case where no source documents are found
+                    else:
+                        st.session_state["messages"].append({
+                            "role": "assistant", 
+                            "content": amanda_message,
+                            "tokens": len(user_input) + len(amanda_message),
+                            "cost": calculate_cost(len(user_input) + len(amanda_message), model="gpt-3.5-turbo")
+                        })
+
             except Exception as e:
                 st.error(f"Error: {e}")
 
@@ -297,7 +344,22 @@ if selection == "Amanda":
             st.markdown(f"**You:** {message['content']}")
         elif message["role"] == "assistant":
             st.markdown(f"**Amanda 🤖:** {message['content']}")
-            
+
+            # Display the most relevant source information if available
+            if "source" in message:
+                source_info = message["source"]
+                filename = source_info.get("filename", "Unknown")
+                page = source_info.get("page", "Unknown")
+                chunk_type = source_info.get("type", "text")  # Optional: include the chunk type if needed
+
+                st.markdown(f"""<p style='color: grey;'>Source: File: <i>{filename}</i>, Page: <i>{page}</i></p>""", unsafe_allow_html=True)
+
+            # Display the cost of tokens
+            if "cost" in message:
+                token_count = message.get("tokens", 0)
+                cost = message.get("cost", 0.0)
+                st.markdown(f"""<p style='color: grey;'>Tokens used: <i>{token_count}</i>, Cost: <i>${cost:.6f}</i></p>""", unsafe_allow_html=True)
+
             # Align Play, Like, Dislike, Re-generate, and Copy buttons
             col1, col2, col3, col4, col5 = st.columns([0.1, 0.1, 0.1, 0.1, 0.1])
             
@@ -341,8 +403,7 @@ if selection == "Amanda":
                     pyperclip.copy(message['content'])
                     st.success("Copied to clipboard!")
 
-
-    # Debugging Page: Display log messages
+# Debugging Page: Display log messages
 elif selection == "Debugging":
     st.title("Debugging Logs")
     st.markdown("### Debugging Information")
@@ -369,26 +430,11 @@ elif selection == "Chunks":
         for idx, chunk in enumerate(st.session_state["chunks"]):
             source = chunk.metadata.get("source", "Unknown")
             page = chunk.metadata.get("page", "N/A")
-            st.markdown(f"**Chunk {idx + 1} from {source}, Page: {page}:**")
+            chunk_type = chunk.metadata.get("type", "text")  # Get the type of chunk (text or table)
+            st.markdown(f"**Chunk {idx + 1} from {source}, Page: {page}, Type: {chunk_type}:**")
             st.text(chunk.page_content)
     else:
         st.write("No chunks available. Please load documents.")
-
-# Similarity Page: Display the top 3 most similar chunks to the last query
-elif selection == "Similarity":
-    st.title("Top 3 Similar Chunks")
-    if st.session_state["last_query"]:
-        st.write(f"**Last Query:** {st.session_state['last_query']}")
-        if st.session_state["similar_chunks"]:
-            for idx, (chunk, score) in enumerate(st.session_state["similar_chunks"]):
-                source = chunk.metadata.get("source", "Unknown")
-                page = chunk.metadata.get("page", "N/A")
-                st.markdown(f"**Similar Chunk {idx + 1} (Score: {score:.4f}) from {source}, Page: {page}:**")
-                st.text(chunk.page_content)
-        else:
-            st.write("No similar chunks available.")
-    else:
-        st.write("No query has been made yet.")
 
 # Footer
 st.markdown("---")
