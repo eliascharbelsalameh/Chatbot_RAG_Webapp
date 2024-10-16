@@ -16,12 +16,12 @@ import pdfplumber # type: ignore
 from gtts import gTTS # type: ignore
 import pygame  # for playing the generated audio # type: ignore
 from langdetect import detect, LangDetectException # type: ignore
+import sqlite3
 
 # TODO: fix similarity score
 # TODO: fix setup_vector_store()
 # TODO: relocate vectorstore FAISS to GIN515-Deep Learning
 # TODO: add groq-whisper3
-# TODO: enhance chat history
 # TODO: enhance tables
 # TODO: load file online
 
@@ -29,6 +29,39 @@ used_model = "gpt-4-turbo"
 chunk_size = 750
 chunk_overlap = 75
 temperature = 0.1
+
+# Connect to SQLite database (or create it if it doesn't exist)
+conn = sqlite3.connect('amanda_memory.db')
+cursor = conn.cursor()
+
+# Create table to store memory if it doesn't already exist
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS memory (
+        query TEXT UNIQUE,  -- Ensure each query is stored once
+        response TEXT
+    )
+''')
+conn.commit()
+
+# Function to store memory
+def store_memory(query, response):
+    try:
+        cursor.execute("INSERT OR IGNORE INTO memory (query, response) VALUES (?, ?)", (query, response))
+        conn.commit()
+    except Exception as e:
+        print(f"Error saving to database: {e}")
+
+# Function to load memory (retrieve a response from a query)
+def load_memory(query):
+    cursor.execute("SELECT response FROM memory WHERE query = ?", (query,))
+    result = cursor.fetchone()
+    return result[0] if result else None
+
+# Function to clear memory (optional for user control)
+def clear_memory():
+    cursor.execute("DELETE FROM memory")
+    conn.commit()
+
 
 # Initialize pygame mixer for TTS playback
 pygame.mixer.init()
@@ -324,48 +357,62 @@ if selection == "Chat with Amanda":
     user_input = st.chat_input("Type your message here...")
 
     if user_input:
-        # Append the user's message to the current chat session
-        current_chat['messages'].append({"role": "user", "content": user_input})
+        # First, check if this query is already in the memory
+        remembered_response = load_memory(user_input)
+        
+        if remembered_response:
+            # If memory exists, return the remembered response
+            st.markdown(f"**Amanda 🤖:** {remembered_response}")
+            current_chat['messages'].append({"role": "assistant", "content": remembered_response})
+        else:
+            # Append the user's message to the current chat session
+            current_chat['messages'].append({"role": "user", "content": user_input})
 
-        with st.spinner("Amanda is thinking..."):
-            # Use the previous chat history as part of the RAG model prompt
-            chat_history = "\n".join([f"{m['role']}: {m['content']}" for m in current_chat['messages']])
-            try:
-                # Query the RAG chain with current user input and chat history as context
-                result = qa_chain({"query": user_input, "context": chat_history})  # Pass chat history to RAG chain
+            with st.spinner("Amanda is thinking..."):
+                # Use the previous chat history as part of the RAG model prompt
+                chat_history = "\n".join([f"{m['role']}: {m['content']}" for m in current_chat['messages']])
+                try:
+                    # Query the RAG chain with current user input and chat history as context
+                    result = qa_chain({"query": user_input, "context": chat_history})
 
-                # Generate the response with token calculation
-                if "result" in result and result["result"]:
-                    amanda_message = result["result"].strip()
+                    # Generate the response with token calculation
+                    if "result" in result and result["result"]:
+                        amanda_message = result["result"].strip()  # Define amanda_message here
 
-                    # Extract the most relevant source document metadata
-                    source_documents = result.get("source_documents", [])
-                    if source_documents:
-                        most_relevant_source = source_documents[0]  # Get the most relevant source document
-                        metadata = most_relevant_source.metadata
-                        filename = metadata.get("source", "Unknown")
-                        page = metadata.get("page", "Unknown")
-                        chunk_type = metadata.get("type", "text")
+                        # Extract the most relevant source document metadata
+                        source_documents = result.get("source_documents", [])
+                        if source_documents:
+                            most_relevant_source = source_documents[0]  # Get the most relevant source document
+                            metadata = most_relevant_source.metadata
+                            filename = metadata.get("source", "Unknown")
+                            page = metadata.get("page", "Unknown")
+                            chunk_type = metadata.get("type", "text")
 
-                        # Simplified token calculation for cost
-                        num_tokens = len(user_input) + len(amanda_message)  # Adjust this as needed
-                        cost = calculate_cost(num_tokens, model=used_model)
+                            # Simplified token calculation for cost
+                            num_tokens = len(user_input) + len(amanda_message)
+                            cost = calculate_cost(num_tokens, model=used_model)
 
-                        # Store the response and its source info along with the cost
-                        current_chat['messages'].append({
-                            "role": "assistant", 
-                            "content": amanda_message, 
-                            "source": {
-                                "filename": filename,
-                                "page": page,
-                                "type": chunk_type
-                            },
-                            "tokens": num_tokens,
-                            "cost": cost
-                        })
+                            # Store the response and its source info along with the cost
+                            current_chat['messages'].append({
+                                "role": "assistant", 
+                                "content": amanda_message, 
+                                "source": {
+                                    "filename": filename,
+                                    "page": page,
+                                    "type": chunk_type
+                                },
+                                "tokens": num_tokens,
+                                "cost": cost
+                            })
 
-                    # Handle case where no source documents are found
+                        # Save the new response in long-term memory
+                        store_memory(user_input, amanda_message)
+
+                    # Handle case where no source documents are found or no result is returned
                     else:
+                        # Set amanda_message to a default value when there is no result
+                        amanda_message = "Sorry, I couldn't find a relevant response."
+                        
                         current_chat['messages'].append({
                             "role": "assistant", 
                             "content": amanda_message,
@@ -373,8 +420,8 @@ if selection == "Chat with Amanda":
                             "cost": calculate_cost(len(user_input) + len(amanda_message), model=used_model)
                         })
 
-            except Exception as e:
-                st.error(f"Error: {e}")
+                except Exception as e:
+                    st.error(f"Error: {e}")
 
     # Display chat session information and cost details
     st.markdown("---")
@@ -441,6 +488,11 @@ if selection == "Chat with Amanda":
                 if copy_button:
                     pyperclip.copy(message['content'])
                     st.success("Copied to clipboard!")
+
+# Button to clear long-term memory
+if st.button("Clear Memory"):
+    clear_memory()
+    st.success("Memory cleared!")
 
 # Debugging Page: Display log messages
 elif selection == "Debugging Logs":
