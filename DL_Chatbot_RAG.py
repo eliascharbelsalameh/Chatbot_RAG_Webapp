@@ -21,8 +21,7 @@ from langdetect import detect, LangDetectException # type: ignore
 # TODO: fix setup_vector_store()
 # TODO: relocate vectorstore FAISS to GIN515-Deep Learning
 # TODO: add groq-whisper3
-# TODO: add memory
-# TODO: add new chat
+# TODO: enhance chat history
 # TODO: enhance tables
 # TODO: load file online
 
@@ -48,7 +47,6 @@ def clear_audio_files():
                     os.remove(file_path)
             except Exception as e:
                 print(f"Error deleting file {file_path}: {e}")
-
 
 clear_audio_files()
 
@@ -82,22 +80,42 @@ def play_audio(text, file_name):
     except Exception as e:
         st.error(f"Error playing audio: {e}")
 
-# Define pages for the Streamlit application
-PAGES = ["Chat with Amanda", "Debugging Logs", "User Feedback", "All Chunks"]
-
-# Set up Streamlit sidebar
-st.sidebar.title("Menu")
-selection = st.sidebar.radio("Go to", PAGES)
-
-# Initialize debugging log, feedback, chunks, and similarity
+# Initialize debugging log, feedback, and chunks
 if "debug_log" not in st.session_state:
     st.session_state["debug_log"] = []
 if "feedback" not in st.session_state:
     st.session_state["feedback"] = []  # Store feedback for each response
 if "chunks" not in st.session_state:
     st.session_state["chunks"] = []  # Store document chunks
-if "last_query" not in st.session_state:
-    st.session_state["last_query"] = None  # Store the last query
+    
+# Initialize chat sessions and current chat index
+if 'chats' not in st.session_state:
+    st.session_state['chats'] = [{"title": "Chat 1", "messages": [{"role": "system", "content": "You are Amanda, a helpful assistant."}]}]
+if 'current_chat_index' not in st.session_state:
+    st.session_state['current_chat_index'] = 0  # Index of the active chat
+# Define pages for the Streamlit application 
+
+PAGES = ["Chat with Amanda", "Debugging Logs", "User Feedback", "All Chunks"]
+
+# Set up Streamlit sidebar
+st.sidebar.title("Menu")
+selection = st.sidebar.radio("Go to", PAGES)
+
+# Sidebar panel for switching between chats
+with st.sidebar:
+    st.markdown("### Chat Sessions")
+    chat_titles = [f"{chat['title']}" for chat in st.session_state['chats']]
+    
+    # Adding a unique key to the st.selectbox
+    selected_chat = st.selectbox("Select a Chat", chat_titles, index=st.session_state['current_chat_index'], key="chat_selectbox")
+    
+    st.session_state['current_chat_index'] = chat_titles.index(selected_chat)
+
+    if st.button("New Chat", key="new_chat_button"):
+        new_chat = {"title": f"Chat {len(st.session_state['chats']) + 1}", 
+                    "messages": [{"role": "system", "content": "You are Amanda, a helpful assistant."}]}
+        st.session_state['chats'].append(new_chat)
+        st.session_state['current_chat_index'] = len(st.session_state['chats']) - 1
 
 # Function to log debug messages
 def log_debug(message):
@@ -292,21 +310,29 @@ if selection == "Chat with Amanda":
 
     qa_chain = create_rag_chain()
 
-    if "messages" not in st.session_state:
-        st.session_state["messages"] = [
-            {"role": "system", "content": "You are Amanda, a helpful assistant."}
-        ]
+    # Retrieve the current chat session
+    current_chat = st.session_state['chats'][st.session_state['current_chat_index']]
 
+    # Display the chat messages in the selected session
+    for idx, message in enumerate(current_chat['messages']):
+        if message['role'] == "user":
+            st.markdown(f"**You:** {message['content']}")
+        elif message['role'] == "assistant":
+            st.markdown(f"**Amanda 🤖:** {message['content']}")
+
+    # Input for the current chat session
     user_input = st.chat_input("Type your message here...")
 
     if user_input:
-        st.session_state["messages"].append({"role": "user", "content": user_input})
-        st.session_state["last_query"] = user_input  # Store the last query
+        # Append the user's message to the current chat session
+        current_chat['messages'].append({"role": "user", "content": user_input})
 
         with st.spinner("Amanda is thinking..."):
+            # Use the previous chat history as part of the RAG model prompt
+            chat_history = "\n".join([f"{m['role']}: {m['content']}" for m in current_chat['messages']])
             try:
-                # Query the RAG chain to get the response and source documents
-                result = qa_chain({"query": user_input})
+                # Query the RAG chain with current user input and chat history as context
+                result = qa_chain({"query": user_input, "context": chat_history})  # Pass chat history to RAG chain
 
                 # Generate the response with token calculation
                 if "result" in result and result["result"]:
@@ -326,7 +352,7 @@ if selection == "Chat with Amanda":
                         cost = calculate_cost(num_tokens, model=used_model)
 
                         # Store the response and its source info along with the cost
-                        st.session_state["messages"].append({
+                        current_chat['messages'].append({
                             "role": "assistant", 
                             "content": amanda_message, 
                             "source": {
@@ -340,7 +366,7 @@ if selection == "Chat with Amanda":
 
                     # Handle case where no source documents are found
                     else:
-                        st.session_state["messages"].append({
+                        current_chat['messages'].append({
                             "role": "assistant", 
                             "content": amanda_message,
                             "tokens": len(user_input) + len(amanda_message),
@@ -350,8 +376,9 @@ if selection == "Chat with Amanda":
             except Exception as e:
                 st.error(f"Error: {e}")
 
+    # Display chat session information and cost details
     st.markdown("---")
-    for idx, message in enumerate(st.session_state["messages"]):
+    for idx, message in enumerate(current_chat['messages']):
         if message["role"] == "user":
             st.markdown(f"**You:** {message['content']}")
         elif message["role"] == "assistant":
