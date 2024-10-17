@@ -17,12 +17,10 @@ from gtts import gTTS # type: ignore
 import pygame  # for playing the generated audio # type: ignore
 from langdetect import detect, LangDetectException # type: ignore
 
-# TODO: fix similarity score
 # TODO: fix setup_vector_store()
 # TODO: relocate vectorstore FAISS to GIN515-Deep Learning
 # TODO: add groq-whisper3
 # TODO: add memory
-# TODO: add new chat
 # TODO: enhance tables
 # TODO: load file online
 
@@ -103,6 +101,33 @@ if "chunks" not in st.session_state:
     st.session_state["chunks"] = []  # Store document chunks
 if "last_query" not in st.session_state:
     st.session_state["last_query"] = None  # Store the last query
+
+# Initialize session variables if not present
+if "all_chats" not in st.session_state:
+    st.session_state["all_chats"] = []  # Holds all chat sessions
+if "active_chat" not in st.session_state:
+    st.session_state["active_chat"] = None  # Keeps track of the currently active chat
+
+# New Chat button
+if st.sidebar.button("New Chat"):
+    new_chat_id = len(st.session_state["all_chats"])
+    st.session_state["all_chats"].append([])  # Create a new chat session
+    st.session_state["active_chat"] = new_chat_id  # Set this as the active chat
+
+# Display chat selection if multiple chats exist
+if len(st.session_state["all_chats"]) > 1:
+    chat_titles = [f"Chat {i + 1}" for i in range(len(st.session_state["all_chats"]))]
+    chat_selection = st.sidebar.selectbox("Select Chat", options=chat_titles, index=st.session_state["active_chat"])
+    st.session_state["active_chat"] = chat_titles.index(chat_selection)  # Set the selected chat as active
+
+# Set up the chat messages for the active chat
+if st.session_state["active_chat"] is not None:
+    if len(st.session_state["all_chats"]) > st.session_state["active_chat"]:
+        active_messages = st.session_state["all_chats"][st.session_state["active_chat"]]
+    else:
+        active_messages = []
+else:
+    active_messages = []
 
 # Function to log debug messages
 def log_debug(message):
@@ -305,8 +330,8 @@ if selection == "Chat with Amanda":
     user_input = st.chat_input("Type your message here...")
 
     if user_input:
-        st.session_state["messages"].append({"role": "user", "content": user_input})
-        st.session_state["last_query"] = user_input  # Store the last query
+        active_messages.append({"role": "user", "content": user_input})
+        st.session_state["all_chats"][st.session_state["active_chat"]] = active_messages  # Update the active chat's messages
 
         with st.spinner("Amanda is thinking..."):
             try:
@@ -327,11 +352,11 @@ if selection == "Chat with Amanda":
                         chunk_type = metadata.get("type", "text")
 
                         # Simplified token calculation for cost
-                        num_tokens = len(user_input) + len(amanda_message)  # Adjust this as needed
+                        num_tokens = len(user_input) + len(amanda_message)
                         cost = calculate_cost(num_tokens, model=used_model)
 
                         # Store the response and its source info along with the cost
-                        st.session_state["messages"].append({
+                        active_messages.append({
                             "role": "assistant", 
                             "content": amanda_message, 
                             "source": {
@@ -342,21 +367,24 @@ if selection == "Chat with Amanda":
                             "tokens": num_tokens,
                             "cost": cost
                         })
-
-                    # Handle case where no source documents are found
                     else:
-                        st.session_state["messages"].append({
+                        # Handle case where no source documents are found
+                        active_messages.append({
                             "role": "assistant", 
                             "content": amanda_message,
                             "tokens": len(user_input) + len(amanda_message),
                             "cost": calculate_cost(len(user_input) + len(amanda_message), model=used_model)
                         })
 
+                # Update the active chat's messages in session state
+                st.session_state["all_chats"][st.session_state["active_chat"]] = active_messages
+
             except Exception as e:
                 st.error(f"Error: {e}")
 
+    # Display conversation history for the active chat
     st.markdown("---")
-    for idx, message in enumerate(st.session_state["messages"]):
+    for idx, message in enumerate(active_messages):
         if message["role"] == "user":
             st.markdown(f"**You:** {message['content']}")
         elif message["role"] == "assistant":
@@ -367,7 +395,7 @@ if selection == "Chat with Amanda":
                 source_info = message["source"]
                 filename = source_info.get("filename", "Unknown")
                 page = source_info.get("page", "Unknown")
-                chunk_type = source_info.get("type", "text")  # Optional: include the chunk type if needed
+                chunk_type = source_info.get("type", "text")
 
                 st.markdown(f"""<p style='color: grey;'>Source: File: <i>{filename}</i>, Page: <i>{page}</i></p>""", unsafe_allow_html=True)
 
@@ -408,9 +436,10 @@ if selection == "Chat with Amanda":
                 regenerate_button = st.button("🔄", key=f"regenerate_{idx}")
                 if regenerate_button:
                     try:
-                        result = qa_chain({"query": st.session_state["messages"][-2]["content"]})
+                        result = qa_chain({"query": active_messages[-2]["content"]})
                         amanda_message = result["result"].strip()
-                        st.session_state["messages"][-1]["content"] = amanda_message
+                        active_messages[-1]["content"] = amanda_message
+                        st.session_state["all_chats"][st.session_state["active_chat"]] = active_messages  # Update after regeneration
                     except Exception as e:
                         st.error(f"Error: {e}")
 
