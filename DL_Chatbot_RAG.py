@@ -16,52 +16,20 @@ import pdfplumber # type: ignore
 from gtts import gTTS # type: ignore
 import pygame  # for playing the generated audio # type: ignore
 from langdetect import detect, LangDetectException # type: ignore
-import sqlite3
 
 # TODO: fix similarity score
 # TODO: fix setup_vector_store()
 # TODO: relocate vectorstore FAISS to GIN515-Deep Learning
 # TODO: add groq-whisper3
+# TODO: add memory
+# TODO: add new chat
 # TODO: enhance tables
 # TODO: load file online
 
-used_model = "gpt-4-turbo"
+used_model = "gpt-3.5-turbo"
 chunk_size = 750
 chunk_overlap = 75
 temperature = 0.1
-
-# Connect to SQLite database (or create it if it doesn't exist)
-conn = sqlite3.connect('amanda_memory.db')
-cursor = conn.cursor()
-
-# Create table to store memory if it doesn't already exist
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS memory (
-        query TEXT UNIQUE,  -- Ensure each query is stored once
-        response TEXT
-    )
-''')
-conn.commit()
-
-# Function to store memory
-def store_memory(query, response):
-    try:
-        cursor.execute("INSERT OR IGNORE INTO memory (query, response) VALUES (?, ?)", (query, response))
-        conn.commit()
-    except Exception as e:
-        print(f"Error saving to database: {e}")
-
-# Function to load memory (retrieve a response from a query)
-def load_memory(query):
-    cursor.execute("SELECT response FROM memory WHERE query = ?", (query,))
-    result = cursor.fetchone()
-    return result[0] if result else None
-
-# Function to clear memory (optional for user control)
-def clear_memory():
-    cursor.execute("DELETE FROM memory")
-    conn.commit()
-
 
 # Initialize pygame mixer for TTS playback
 pygame.mixer.init()
@@ -72,14 +40,20 @@ if not os.path.exists(audio_folder):
     os.makedirs(audio_folder)
 
 def clear_audio_files():
+    if pygame.mixer.music.get_busy():
+        pygame.mixer.music.stop()  # Stop any audio currently playing
+
     if os.path.exists(audio_folder):
         for file_name in os.listdir(audio_folder):
             file_path = os.path.join(audio_folder, file_name)
             try:
                 if os.path.isfile(file_path):
                     os.remove(file_path)
+                    print(f"Deleted file: {file_path}")
             except Exception as e:
                 print(f"Error deleting file {file_path}: {e}")
+    else:
+        print("Audio folder does not exist.")
 
 clear_audio_files()
 
@@ -113,42 +87,22 @@ def play_audio(text, file_name):
     except Exception as e:
         st.error(f"Error playing audio: {e}")
 
-# Initialize debugging log, feedback, and chunks
-if "debug_log" not in st.session_state:
-    st.session_state["debug_log"] = []
-if "feedback" not in st.session_state:
-    st.session_state["feedback"] = []  # Store feedback for each response
-if "chunks" not in st.session_state:
-    st.session_state["chunks"] = []  # Store document chunks
-    
-# Initialize chat sessions and current chat index
-if 'chats' not in st.session_state:
-    st.session_state['chats'] = [{"title": "Chat 1", "messages": [{"role": "system", "content": "You are Amanda, a helpful assistant."}]}]
-if 'current_chat_index' not in st.session_state:
-    st.session_state['current_chat_index'] = 0  # Index of the active chat
-# Define pages for the Streamlit application 
-
+# Define pages for the Streamlit application
 PAGES = ["Chat with Amanda", "Debugging Logs", "User Feedback", "All Chunks"]
 
 # Set up Streamlit sidebar
 st.sidebar.title("Menu")
 selection = st.sidebar.radio("Go to", PAGES)
 
-# Sidebar panel for switching between chats
-with st.sidebar:
-    st.markdown("### Chat Sessions")
-    chat_titles = [f"{chat['title']}" for chat in st.session_state['chats']]
-    
-    # Adding a unique key to the st.selectbox
-    selected_chat = st.selectbox("Select a Chat", chat_titles, index=st.session_state['current_chat_index'], key="chat_selectbox")
-    
-    st.session_state['current_chat_index'] = chat_titles.index(selected_chat)
-
-    if st.button("New Chat", key="new_chat_button"):
-        new_chat = {"title": f"Chat {len(st.session_state['chats']) + 1}", 
-                    "messages": [{"role": "system", "content": "You are Amanda, a helpful assistant."}]}
-        st.session_state['chats'].append(new_chat)
-        st.session_state['current_chat_index'] = len(st.session_state['chats']) - 1
+# Initialize debugging log, feedback, chunks, and similarity
+if "debug_log" not in st.session_state:
+    st.session_state["debug_log"] = []
+if "feedback" not in st.session_state:
+    st.session_state["feedback"] = []  # Store feedback for each response
+if "chunks" not in st.session_state:
+    st.session_state["chunks"] = []  # Store document chunks
+if "last_query" not in st.session_state:
+    st.session_state["last_query"] = None  # Store the last query
 
 # Function to log debug messages
 def log_debug(message):
@@ -235,7 +189,7 @@ if selection == "Chat with Amanda":
         except Exception as e:
             st.error(f"Error reading files from directory: {e}")
             log_debug(f"Error reading files from directory: {e}")
-        
+
         log_debug(f"Total documents loaded: {len(documents)}")
         return documents
 
@@ -258,7 +212,7 @@ if selection == "Chat with Amanda":
                 vectorstore = FAISS.load_local('vectorstore/db_faiss', embeddings, allow_dangerous_deserialization=True)
                 log_debug("Vector store loaded successfully.")
                 return vectorstore
-            
+
             except Exception as e:
                 st.error("Existing FAISS vector store is corrupted. Recreating it...")
                 log_debug(f"Error loading existing vector store: {e}")
@@ -282,7 +236,7 @@ if selection == "Chat with Amanda":
         )  
         texts = text_splitter.split_documents(documents)
         log_debug(f"Text splitter created {len(texts)} chunks.")
-        
+
         if not texts:
             st.error("Text splitting failed. No chunks were created.")
             return None  # Avoid proceeding if no chunks were created
@@ -343,89 +297,66 @@ if selection == "Chat with Amanda":
 
     qa_chain = create_rag_chain()
 
-    # Retrieve the current chat session
-    current_chat = st.session_state['chats'][st.session_state['current_chat_index']]
+    if "messages" not in st.session_state:
+        st.session_state["messages"] = [
+            {"role": "system", "content": "You are Amanda, a helpful assistant."}
+        ]
 
-    # Display the chat messages in the selected session
-    for idx, message in enumerate(current_chat['messages']):
-        if message['role'] == "user":
-            st.markdown(f"**You:** {message['content']}")
-        elif message['role'] == "assistant":
-            st.markdown(f"**Amanda 🤖:** {message['content']}")
-
-    # Input for the current chat session
     user_input = st.chat_input("Type your message here...")
 
     if user_input:
-        # First, check if this query is already in the memory
-        remembered_response = load_memory(user_input)
-        
-        if remembered_response:
-            # If memory exists, return the remembered response
-            st.markdown(f"**Amanda 🤖:** {remembered_response}")
-            current_chat['messages'].append({"role": "assistant", "content": remembered_response})
-        else:
-            # Append the user's message to the current chat session
-            current_chat['messages'].append({"role": "user", "content": user_input})
+        st.session_state["messages"].append({"role": "user", "content": user_input})
+        st.session_state["last_query"] = user_input  # Store the last query
 
-            with st.spinner("Amanda is thinking..."):
-                # Use the previous chat history as part of the RAG model prompt
-                chat_history = "\n".join([f"{m['role']}: {m['content']}" for m in current_chat['messages']])
-                try:
-                    # Query the RAG chain with current user input and chat history as context
-                    result = qa_chain({"query": user_input, "context": chat_history})
+        with st.spinner("Amanda is thinking..."):
+            try:
+                # Query the RAG chain to get the response and source documents
+                result = qa_chain({"query": user_input})
 
-                    # Generate the response with token calculation
-                    if "result" in result and result["result"]:
-                        amanda_message = result["result"].strip()  # Define amanda_message here
+                # Generate the response with token calculation
+                if "result" in result and result["result"]:
+                    amanda_message = result["result"].strip()
 
-                        # Extract the most relevant source document metadata
-                        source_documents = result.get("source_documents", [])
-                        if source_documents:
-                            most_relevant_source = source_documents[0]  # Get the most relevant source document
-                            metadata = most_relevant_source.metadata
-                            filename = metadata.get("source", "Unknown")
-                            page = metadata.get("page", "Unknown")
-                            chunk_type = metadata.get("type", "text")
+                    # Extract the most relevant source document metadata
+                    source_documents = result.get("source_documents", [])
+                    if source_documents:
+                        most_relevant_source = source_documents[0]  # Get the most relevant source document
+                        metadata = most_relevant_source.metadata
+                        filename = metadata.get("source", "Unknown")
+                        page = metadata.get("page", "Unknown")
+                        chunk_type = metadata.get("type", "text")
 
-                            # Simplified token calculation for cost
-                            num_tokens = len(user_input) + len(amanda_message)
-                            cost = calculate_cost(num_tokens, model=used_model)
+                        # Simplified token calculation for cost
+                        num_tokens = len(user_input) + len(amanda_message)  # Adjust this as needed
+                        cost = calculate_cost(num_tokens, model=used_model)
 
-                            # Store the response and its source info along with the cost
-                            current_chat['messages'].append({
-                                "role": "assistant", 
-                                "content": amanda_message, 
-                                "source": {
-                                    "filename": filename,
-                                    "page": page,
-                                    "type": chunk_type
-                                },
-                                "tokens": num_tokens,
-                                "cost": cost
-                            })
+                        # Store the response and its source info along with the cost
+                        st.session_state["messages"].append({
+                            "role": "assistant", 
+                            "content": amanda_message, 
+                            "source": {
+                                "filename": filename,
+                                "page": page,
+                                "type": chunk_type
+                            },
+                            "tokens": num_tokens,
+                            "cost": cost
+                        })
 
-                        # Save the new response in long-term memory
-                        store_memory(user_input, amanda_message)
-
-                    # Handle case where no source documents are found or no result is returned
+                    # Handle case where no source documents are found
                     else:
-                        # Set amanda_message to a default value when there is no result
-                        amanda_message = "Sorry, I couldn't find a relevant response."
-                        
-                        current_chat['messages'].append({
+                        st.session_state["messages"].append({
                             "role": "assistant", 
                             "content": amanda_message,
                             "tokens": len(user_input) + len(amanda_message),
                             "cost": calculate_cost(len(user_input) + len(amanda_message), model=used_model)
                         })
 
-                except Exception as e:
-                    st.error(f"Error: {e}")
+            except Exception as e:
+                st.error(f"Error: {e}")
 
-    # Display chat session information and cost details
     st.markdown("---")
-    for idx, message in enumerate(current_chat['messages']):
+    for idx, message in enumerate(st.session_state["messages"]):
         if message["role"] == "user":
             st.markdown(f"**You:** {message['content']}")
         elif message["role"] == "assistant":
@@ -448,13 +379,13 @@ if selection == "Chat with Amanda":
 
             # Align Play, Like, Dislike, Re-generate, and Copy buttons
             col1, col2, col3, col4, col5 = st.columns([0.1, 0.1, 0.1, 0.1, 0.1])
-            
+
             with col1:
                 # Play response button for Amanda's reply (emoji-only button)
                 play_button = st.button("🔊", key=f"play_{idx}")
                 if play_button:
                     play_audio(message['content'], file_name=f"amanda_reply_{idx}")
-            
+
             with col2:
                 like_button = st.button("👍", key=f"like_{idx}")
                 if like_button:
@@ -488,11 +419,6 @@ if selection == "Chat with Amanda":
                 if copy_button:
                     pyperclip.copy(message['content'])
                     st.success("Copied to clipboard!")
-
-# Button to clear long-term memory
-if st.button("Clear Memory"):
-    clear_memory()
-    st.success("Memory cleared!")
 
 # Debugging Page: Display log messages
 elif selection == "Debugging Logs":
