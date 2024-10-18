@@ -17,10 +17,12 @@ from gtts import gTTS # type: ignore
 import pygame  # for playing the generated audio # type: ignore
 from langdetect import detect, LangDetectException # type: ignore
 
+# TODO: fix similarity score
 # TODO: fix setup_vector_store()
 # TODO: relocate vectorstore FAISS to GIN515-Deep Learning
 # TODO: add groq-whisper3
 # TODO: add memory
+# TODO: add new chat
 # TODO: enhance tables
 # TODO: load file online
 
@@ -40,7 +42,6 @@ if not os.path.exists(audio_folder):
 def clear_audio_files():
     if pygame.mixer.music.get_busy():
         pygame.mixer.music.stop()  # Stop any audio currently playing
-
     if os.path.exists(audio_folder):
         for file_name in os.listdir(audio_folder):
             file_path = os.path.join(audio_folder, file_name)
@@ -102,33 +103,6 @@ if "chunks" not in st.session_state:
 if "last_query" not in st.session_state:
     st.session_state["last_query"] = None  # Store the last query
 
-# Initialize session variables if not present
-if "all_chats" not in st.session_state:
-    st.session_state["all_chats"] = []  # Holds all chat sessions
-if "active_chat" not in st.session_state:
-    st.session_state["active_chat"] = None  # Keeps track of the currently active chat
-
-# New Chat button
-if st.sidebar.button("New Chat"):
-    new_chat_id = len(st.session_state["all_chats"])
-    st.session_state["all_chats"].append([])  # Create a new chat session
-    st.session_state["active_chat"] = new_chat_id  # Set this as the active chat
-
-# Display chat selection if multiple chats exist
-if len(st.session_state["all_chats"]) > 1:
-    chat_titles = [f"Chat {i + 1}" for i in range(len(st.session_state["all_chats"]))]
-    chat_selection = st.sidebar.selectbox("Select Chat", options=chat_titles, index=st.session_state["active_chat"])
-    st.session_state["active_chat"] = chat_titles.index(chat_selection)  # Set the selected chat as active
-
-# Set up the chat messages for the active chat
-if st.session_state["active_chat"] is not None:
-    if len(st.session_state["all_chats"]) > st.session_state["active_chat"]:
-        active_messages = st.session_state["all_chats"][st.session_state["active_chat"]]
-    else:
-        active_messages = []
-else:
-    active_messages = []
-
 # Function to log debug messages
 def log_debug(message):
     st.session_state["debug_log"].append(message)
@@ -169,47 +143,145 @@ if selection == "Chat with Amanda":
     st.title("🤖 Chat with Amanda (RAG Enhanced)")
     st.write("Amanda is now enhanced with Retrieval-Augmented Generation (RAG) for better, more accurate responses!")
 
-    # Load PDF, Word, and Excel Documents from directories (recursively)
+    # Check if the FAISS index files exist and are not corrupted
+    def faiss_index_exists():
+        index_file = os.path.join(vectorstore_dir, 'index.faiss')
+        metadata_file = os.path.join(vectorstore_dir, 'docstore.pkl')
+        
+        # Check if the necessary files exist
+        if not os.path.exists(index_file) or not os.path.exists(metadata_file):
+            log_debug("FAISS index or metadata file is missing.")
+            return False
+        
+        try:
+            # Attempt to load the files to ensure they are not corrupted
+            log_debug("Checking FAISS index and metadata files for corruption...")
+            embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
+            FAISS.load_local(vectorstore_dir, embeddings, allow_dangerous_deserialization=True)
+            log_debug("FAISS index is valid and not corrupted.")
+            return True
+        except Exception as e:
+            log_debug(f"FAISS index appears corrupted: {e}")
+            return False
+
+    # Function to load the vector store, only recreate if it is corrupted or missing
+    @st.cache_resource
+    def load_vector_store():
+        log_debug("Attempting to load FAISS vector store...")
+        
+        if faiss_index_exists():
+            try:
+                log_debug("Loading existing FAISS vector store from disk...")
+                embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
+                vectorstore = FAISS.load_local(vectorstore_dir, embeddings, allow_dangerous_deserialization=True)
+                log_debug("Successfully loaded FAISS vector store.")
+                return vectorstore
+            except Exception as e:
+                st.error("Error loading existing FAISS vector store. Recreating...")
+                log_debug(f"Error loading FAISS vector store: {e}")
+
+        return recreate_vector_store()
+
+    # Function to recreate the vector store by processing files again
+    def recreate_vector_store():
+        log_debug("Recreating FAISS vector store from documents...")
+        
+        documents = read_files_from_directory(input_directory)
+        
+        log_debug(f"Total documents processed for vector store: {len(documents)}")
+        
+        if not documents:
+            st.error("No documents were loaded. Please check the input directory.")
+            log_debug("No documents found. Cannot recreate vector store.")
+            return None
+        
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            separators=["\n\n", "\n", ".", " "]
+        )
+        
+        texts = text_splitter.split_documents(documents)
+        log_debug(f"Text splitter created {len(texts)} chunks.")
+        
+        if not texts:
+            st.error("Text splitting failed. No chunks were created.")
+            log_debug("Text splitting failed, no chunks created.")
+            return None
+
+        st.session_state["chunks"] = texts
+        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
+        
+        try:
+            vectorstore = FAISS.from_documents(texts, embeddings)
+            vectorstore.save_local(vectorstore_dir)  # Save in the project folder
+            log_debug("FAISS vector store created and saved successfully.")
+            return vectorstore
+        except Exception as e:
+            st.error(f"Error creating FAISS vector store: {str(e)}")
+            log_debug(f"Error creating FAISS vector store: {str(e)}")
+            return None
+
+    # Function to read files from a directory and extract their content
     def read_files_from_directory(directory_path):
         log_debug(f"Reading files from directory: {directory_path}")
         documents = []
+        
         try:
+            # Check if directory exists
+            if not os.path.exists(directory_path):
+                st.error(f"The directory {directory_path} does not exist.")
+                log_debug(f"The directory {directory_path} does not exist.")
+                return documents
+
+            # Traverse the directory
             for dirpath, dirnames, filenames in os.walk(directory_path):
+                log_debug(f"Found {len(filenames)} files in {dirpath}")
+
                 for filename in filenames:
+                    if filename.startswith('.'):
+                        log_debug(f"Skipping hidden file: {filename}")
+                        continue
+
                     file_path = os.path.join(dirpath, filename)
-                    log_debug(f"Processing file: {filename}")
+                    log_debug(f"Processing file: {file_path}")
 
-                    if filename.endswith('.pdf'):
-                        with pdfplumber.open(file_path) as pdf:
-                            for page_number, page in enumerate(pdf.pages, start=1):
-                                text = page.extract_text()
-                                if text:
-                                    documents.append(Document(page_content=text, metadata={"source": filename, "page": page_number}))
-                                    log_debug(f"Extracted text from PDF: {filename}, Page: {page_number}")
+                    try:
+                        if filename.lower().endswith('.pdf'):
+                            log_debug(f"Extracting content from PDF: {filename}")
+                            with pdfplumber.open(file_path) as pdf:
+                                for page_number, page in enumerate(pdf.pages, start=1):
+                                    text = page.extract_text()
+                                    if text:
+                                        documents.append(Document(page_content=text, metadata={"source": filename, "page": page_number}))
+                                        log_debug(f"Extracted text from PDF: {filename}, Page: {page_number}")
+                                    
+                                    tables = page.extract_tables()
+                                    for table in tables:
+                                        table_text = pd.DataFrame(table).to_string()
+                                        documents.append(Document(page_content=table_text, metadata={"source": filename, "page": page_number, "type": "table"}))
+                                        log_debug(f"Extracted table from PDF: {filename}, Page: {page_number}")
 
-                                tables = page.extract_tables()
-                                for table in tables:
-                                    table_text = pd.DataFrame(table).to_string()
-                                    documents.append(Document(page_content=table_text, metadata={"source": filename, "page": page_number, "type": "table"}))
-                                    log_debug(f"Extracted table from PDF: {filename}, Page: {page_number}")
+                        elif filename.lower().endswith('.docx'):
+                            log_debug(f"Extracting content from Word document: {filename}")
+                            doc = docx.Document(file_path)
+                            full_text = [para.text for para in doc.paragraphs]
+                            documents.append(Document(page_content="\n".join(full_text), metadata={"source": filename}))
+                            log_debug(f"Extracted text from Word document: {filename}")
 
-                    elif filename.endswith('.docx'):
-                        doc = docx.Document(file_path)
-                        full_text = []
-                        for paragraph in doc.paragraphs:
-                            full_text.append(paragraph.text)
-                        documents.append(Document(page_content="\n".join(full_text), metadata={"source": filename}))
-                        log_debug(f"Extracted text from Word document: {filename}")
-
-                    elif filename.endswith('.xlsx'):
-                        try:
+                        elif filename.lower().endswith('.xlsx'):
+                            log_debug(f"Extracting content from Excel file: {filename}")
                             df = pd.read_excel(file_path)
-                            full_text = df.to_string()
-                            documents.append(Document(page_content=full_text, metadata={"source": filename}))
+                            documents.append(Document(page_content=df.to_string(), metadata={"source": filename}))
                             log_debug(f"Extracted data from Excel file: {filename}")
-                        except Exception as e:
-                            st.error(f"Error reading Excel file {filename}: {e}")
-                            log_debug(f"Error reading Excel file {filename}: {e}")
+                        
+                        else:
+                            log_debug(f"Skipped unsupported file: {filename}")
+
+                    except Exception as e:
+                        st.error(f"Error processing file {filename}: {e}")
+                        log_debug(f"Error processing file {filename}: {e}")
+                        continue
 
         except Exception as e:
             st.error(f"Error reading files from directory: {e}")
@@ -221,66 +293,11 @@ if selection == "Chat with Amanda":
     # Define the directory where your files are stored
     input_directory = r"C:\Users\elias\OneDrive\Bureau\USEK-Electrical and Electronics Engineer\Semesters\Term-9_Fall-202510\GIN515-Deep Learning-non_repository\Files_dir_RAG"
 
-    # Check if the FAISS index files exist and are not corrupted
-    def faiss_index_exists():
-        index_file = 'vectorstore/db_faiss/index.faiss'
-        metadata_file = 'vectorstore/db_faiss/docstore.pkl'  # Replace with appropriate file if needed
-        return os.path.exists(index_file) and os.path.exists(metadata_file)
+    # Get the root directory of the project folder dynamically
+    project_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # Function to load the vector store, only recreate if it is corrupted or missing
-    @st.cache_resource
-    def load_vector_store():
-        if faiss_index_exists():
-            try:
-                log_debug("Loading existing FAISS vector store...")
-                embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
-                vectorstore = FAISS.load_local('vectorstore/db_faiss', embeddings, allow_dangerous_deserialization=True)
-                log_debug("Vector store loaded successfully.")
-                return vectorstore
-
-            except Exception as e:
-                st.error("Existing FAISS vector store is corrupted. Recreating it...")
-                log_debug(f"Error loading existing vector store: {e}")
-
-        return recreate_vector_store()
-
-    # Function to recreate the vector store by processing files again
-    def recreate_vector_store():
-        log_debug("Creating new FAISS vector store...")
-        documents = read_files_from_directory(input_directory)
-        log_debug(f"Total documents processed: {len(documents)}")
-
-        if not documents:
-            st.error("No documents were loaded. Please check the input directory.")
-            return None  # Avoid proceeding if no documents are loaded
-
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            separators=["\n\n", "\n", ".", " "]
-        )  
-        texts = text_splitter.split_documents(documents)
-        log_debug(f"Text splitter created {len(texts)} chunks.")
-
-        if not texts:
-            st.error("Text splitting failed. No chunks were created.")
-            return None  # Avoid proceeding if no chunks were created
-
-        st.session_state["chunks"] = texts
-        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
-        try:
-            vectorstore = FAISS.from_documents(texts, embeddings)
-            vectorstore.save_local('vectorstore/db_faiss')
-            log_debug("Vector store created and saved successfully.")
-            return vectorstore
-        except Exception as e:
-            st.error(f"Error creating FAISS vector store: {str(e)}")
-            log_debug(f"Error creating FAISS vector store: {str(e)}")
-            return None
-
-    @st.cache_resource
-    def setup_vector_store(directory):
-        return load_vector_store()
+    # Define a relative path to the 'vectorstore' directory inside your project folder
+    vectorstore_dir = os.path.join(project_dir, 'vectorstore/db_faiss')
 
     def calculate_cost(num_tokens, model=used_model):
         if model == "gpt-4":
@@ -297,7 +314,7 @@ if selection == "Chat with Amanda":
     def create_rag_chain():
         log_debug("Creating RAG chain...")
         try:
-            vectorstore = setup_vector_store(input_directory)
+            vectorstore = recreate_vector_store()
             template = """
             Use the following pieces of context to answer the question at the end. 
             If you don't know the answer, just say that you don't know, don't try to make up an answer.
@@ -330,18 +347,15 @@ if selection == "Chat with Amanda":
     user_input = st.chat_input("Type your message here...")
 
     if user_input:
-        active_messages.append({"role": "user", "content": user_input})
-        st.session_state["all_chats"][st.session_state["active_chat"]] = active_messages  # Update the active chat's messages
-
+        st.session_state["messages"].append({"role": "user", "content": user_input})
+        st.session_state["last_query"] = user_input  # Store the last query
         with st.spinner("Amanda is thinking..."):
             try:
                 # Query the RAG chain to get the response and source documents
                 result = qa_chain({"query": user_input})
-
                 # Generate the response with token calculation
                 if "result" in result and result["result"]:
                     amanda_message = result["result"].strip()
-
                     # Extract the most relevant source document metadata
                     source_documents = result.get("source_documents", [])
                     if source_documents:
@@ -350,13 +364,11 @@ if selection == "Chat with Amanda":
                         filename = metadata.get("source", "Unknown")
                         page = metadata.get("page", "Unknown")
                         chunk_type = metadata.get("type", "text")
-
                         # Simplified token calculation for cost
-                        num_tokens = len(user_input) + len(amanda_message)
+                        num_tokens = len(user_input) + len(amanda_message)  # Adjust this as needed
                         cost = calculate_cost(num_tokens, model=used_model)
-
                         # Store the response and its source info along with the cost
-                        active_messages.append({
+                        st.session_state["messages"].append({
                             "role": "assistant", 
                             "content": amanda_message, 
                             "source": {
@@ -367,24 +379,20 @@ if selection == "Chat with Amanda":
                             "tokens": num_tokens,
                             "cost": cost
                         })
+                    # Handle case where no source documents are found
                     else:
-                        # Handle case where no source documents are found
-                        active_messages.append({
+                        st.session_state["messages"].append({
                             "role": "assistant", 
                             "content": amanda_message,
                             "tokens": len(user_input) + len(amanda_message),
                             "cost": calculate_cost(len(user_input) + len(amanda_message), model=used_model)
                         })
 
-                # Update the active chat's messages in session state
-                st.session_state["all_chats"][st.session_state["active_chat"]] = active_messages
-
             except Exception as e:
                 st.error(f"Error: {e}")
 
-    # Display conversation history for the active chat
     st.markdown("---")
-    for idx, message in enumerate(active_messages):
+    for idx, message in enumerate(st.session_state["messages"]):
         if message["role"] == "user":
             st.markdown(f"**You:** {message['content']}")
         elif message["role"] == "assistant":
@@ -395,7 +403,7 @@ if selection == "Chat with Amanda":
                 source_info = message["source"]
                 filename = source_info.get("filename", "Unknown")
                 page = source_info.get("page", "Unknown")
-                chunk_type = source_info.get("type", "text")
+                chunk_type = source_info.get("type", "text")  # Optional: include the chunk type if needed
 
                 st.markdown(f"""<p style='color: grey;'>Source: File: <i>{filename}</i>, Page: <i>{page}</i></p>""", unsafe_allow_html=True)
 
@@ -407,13 +415,11 @@ if selection == "Chat with Amanda":
 
             # Align Play, Like, Dislike, Re-generate, and Copy buttons
             col1, col2, col3, col4, col5 = st.columns([0.1, 0.1, 0.1, 0.1, 0.1])
-
             with col1:
                 # Play response button for Amanda's reply (emoji-only button)
                 play_button = st.button("🔊", key=f"play_{idx}")
                 if play_button:
                     play_audio(message['content'], file_name=f"amanda_reply_{idx}")
-
             with col2:
                 like_button = st.button("👍", key=f"like_{idx}")
                 if like_button:
@@ -436,10 +442,9 @@ if selection == "Chat with Amanda":
                 regenerate_button = st.button("🔄", key=f"regenerate_{idx}")
                 if regenerate_button:
                     try:
-                        result = qa_chain({"query": active_messages[-2]["content"]})
+                        result = qa_chain({"query": st.session_state["messages"][-2]["content"]})
                         amanda_message = result["result"].strip()
-                        active_messages[-1]["content"] = amanda_message
-                        st.session_state["all_chats"][st.session_state["active_chat"]] = active_messages  # Update after regeneration
+                        st.session_state["messages"][-1]["content"] = amanda_message
                     except Exception as e:
                         st.error(f"Error: {e}")
 
