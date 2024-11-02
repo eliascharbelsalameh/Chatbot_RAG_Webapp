@@ -1,10 +1,11 @@
 import streamlit as st
 import openai
 import os
-import pyperclip
-from deepgram import Deepgram
+import pyperclip # type: ignore
+from deepgram import Deepgram # type: ignore
 import tempfile
-import sounddevice as sd
+import sounddevice as sd # type: ignore
+from transformers import pipeline # type: ignore
 
 from audio_utils import clear_audio_files, play_audio, record_audio, transcribe_audio_v3
 from document_processing import read_files_from_directory
@@ -33,6 +34,9 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")  # Make sure you have set your API key in the environment variable
 deepgram_client = Deepgram(DEEPGRAM_API_KEY)
 
+# Initialize the summarization pipeline
+summarizer = pipeline("summarization")
+
 # Clear any existing audio files
 clear_audio_files()
 
@@ -57,7 +61,7 @@ if selection == "Chat with Amanda":
         log_debug("Loading vector store...")
         vectorstore = load_vector_store()
         log_debug("Vector store loaded successfully.")
-        qa_chain = create_rag_chain(vectorstore, used_model=used_model)
+        qa_chain = create_rag_chain(vectorstore, used_model)
     except ValueError as e:
         st.error(f"Error loading vector store: {e}")
         log_debug(f"Error loading vector store: {e}")
@@ -67,12 +71,24 @@ if selection == "Chat with Amanda":
     if st.sidebar.button("New Chat"):
         st.session_state["all_chats"].append([])  # Create a new chat session
         st.session_state["active_chat"] = len(st.session_state["all_chats"]) - 1  # Set this as the active chat
+        st.session_state["chat_titles"] = st.session_state.get("chat_titles", [])
+        st.session_state["chat_titles"].append(f"Chat {len(st.session_state['all_chats'])}")
 
-    # Display chat selection if multiple chats exist
-    if len(st.session_state["all_chats"]) > 1:
-        chat_titles = [f"Chat {i + 1}" for i in range(len(st.session_state["all_chats"]))]
-        chat_selection = st.sidebar.selectbox("Select Chat", options=chat_titles, index=st.session_state["active_chat"])
-        st.session_state["active_chat"] = chat_titles.index(chat_selection)  # Set the selected chat as active
+    # Update chat title after the first user input
+    if st.session_state["all_chats"][st.session_state["active_chat"]]:
+        first_message = st.session_state["all_chats"][st.session_state["active_chat"]][0].get("content", "")
+        if first_message and st.session_state["chat_titles"][st.session_state["active_chat"]].startswith("Chat"):
+            new_chat_title = summarizer(first_message, max_length=4, min_length=2, do_sample=False)[0]['summary_text']
+            st.session_state["chat_titles"][st.session_state["active_chat"]] = new_chat_title
+
+    # Display chat list as a fixed list in the sidebar with an outline for the active chat
+    st.sidebar.title("Chats")
+    for i, title in enumerate(st.session_state.get("chat_titles", [])):
+        if i == st.session_state["active_chat"]:
+            st.sidebar.markdown(f"<div style='border: 2px solid #4CAF50; padding: 5px;'>{title}</div>", unsafe_allow_html=True)
+        else:
+            if st.sidebar.button(title, key=f"chat_{i}"):
+                st.session_state["active_chat"] = i  # Set the selected chat as active
 
     # Set up the chat messages for the active chat
     active_messages = st.session_state["all_chats"][st.session_state["active_chat"]]

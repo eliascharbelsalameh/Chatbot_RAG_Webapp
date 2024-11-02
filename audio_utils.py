@@ -3,8 +3,9 @@ import pygame # type: ignore
 import sounddevice as sd # type: ignore
 import wave
 import tempfile
-from gtts import gTTS # type: ignore
 from langdetect import detect, LangDetectException # type: ignore
+from deepgram import Deepgram # type: ignore
+import requests
 
 audio_folder = "audio_files"
 if not os.path.exists(audio_folder):
@@ -31,11 +32,31 @@ def detect_language(text):
         return 'en'
 
 def play_audio(text, file_name):
-    language = detect_language(text)
+    # Generate audio using Deepgram and play it
+    DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+    if not DEEPGRAM_API_KEY:
+        raise ValueError("Deepgram API key is not set in the environment variables.")
+    
     audio_file_path = os.path.join(audio_folder, f"{file_name}.mp3")
     if not os.path.exists(audio_file_path):
-        tts = gTTS(text, lang=language)
-        tts.save(audio_file_path)
+        # Use Deepgram to generate audio
+        response = requests.post(
+            "https://api.deepgram.com/v1/speak",
+            headers={
+                "Authorization": f"Token {DEEPGRAM_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "text": text,
+                #"voice": "en_us_male"  # Specify the voice here, e.g., "en_us_male" or "en_uk_female"
+            }
+        )
+        if response.status_code == 200:
+            with open(audio_file_path, "wb") as audio_file:
+                audio_file.write(response.content)
+        else:
+            raise Exception(f"Error generating audio: {response.text}")
+    
     pygame.mixer.music.load(audio_file_path)
     pygame.mixer.music.play()
     while pygame.mixer.music.get_busy():
@@ -53,10 +74,10 @@ def record_audio(duration=5, sample_rate=44100):
     return temp_wav_file.name
 
 def transcribe_audio_v3(audio_file_path):
-    import requests
-    from deepgram import Deepgram # type: ignore
-
     DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+    if not DEEPGRAM_API_KEY:
+        raise ValueError("Deepgram API key is not set in the environment variables.")
+
     headers = {
         'Authorization': f'Token {DEEPGRAM_API_KEY}',
     }
