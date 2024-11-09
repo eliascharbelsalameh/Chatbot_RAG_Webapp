@@ -21,6 +21,10 @@ def initialize_session_state():
         st.session_state['recording'] = False  # Indicates if recording is in progress
     if 'qa_chain' not in st.session_state:
         st.session_state['qa_chain'] = None  # Retrieval-Augmented Generation chain
+    
+    # Initialize "chunks" to prevent KeyError
+    if 'chunks' not in st.session_state:
+        st.session_state['chunks'] = []  # List to store document chunks
 
 def log_debug(message: str):
     st.session_state['debug_log'].append(message)

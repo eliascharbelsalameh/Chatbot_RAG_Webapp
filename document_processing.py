@@ -3,7 +3,7 @@
 import os
 import json
 from typing import List
-from langchain.docstore.document import Document
+from langchain.docstore.document import Document  # type: ignore
 from docx import Document as DocxDocument  # type: ignore
 import pdfplumber  # type: ignore
 import pandas as pd

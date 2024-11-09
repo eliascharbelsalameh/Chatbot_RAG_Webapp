@@ -2,6 +2,7 @@
 
 import json
 from langchain.text_splitter import RecursiveCharacterTextSplitter # type: ignore
+from typing import List
 
 def load_crawled_data(json_file_path="crawled_data.json"):
     """
@@ -50,4 +51,19 @@ def split_into_chunks(crawled_data, chunk_size=500, chunk_overlap=50):
                 "chunk_id": f"{source_url}_chunk_{i}",
                 "content": chunk
             })
+    return chunks
+
+def split_into_chunks(text: str, max_length: int = 500) -> List[str]:
+    """
+    Splits the input text into chunks of maximum `max_length` words.
+    
+    Args:
+        text (str): The text to be split.
+        max_length (int): Maximum number of words per chunk.
+        
+    Returns:
+        List[str]: A list of text chunks.
+    """
+    words = text.split()
+    chunks = [' '.join(words[i:i + max_length]) for i in range(0, len(words), max_length)]
     return chunks

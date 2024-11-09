@@ -9,6 +9,9 @@ import tempfile
 import sounddevice as sd  # type: ignore
 from transformers import pipeline  # type: ignore
 from groq import Groq  # type: ignore
+import json
+import threading  # To handle threading for non-blocking operations
+import tiktoken # type: ignore
 
 from audio_utils import clear_audio_files, play_audio, record_audio, transcribe_audio_v3
 from document_processing import read_files_from_directory
@@ -19,8 +22,14 @@ from audio_processing import get_recorder
 from web_crawl import WebCrawler
 from data_processing import load_crawled_data, split_into_chunks
 
-import json
-import threading  # To handle threading for non-blocking operations
+# TODO: OLAMA download LLAMA 3.2 8b 
+# TODO: apply chunking to the 
+# TODO: fix whisper
+# TODO: load files online
+# TODO: add chat history
+# TODO: enhance tables
+# TODO: load file online
+# TODO: embedding text 3
 
 # Initialize Streamlit app
 st.set_page_config(page_title="Amanda Chatbot", layout="wide")
@@ -34,6 +43,29 @@ recorder = get_recorder()
 # Define supported model and temperature
 used_model = "gpt-4-turbo"
 temperature = 0.01
+
+# main.py (add this function below the imports and initializations)
+
+def count_tokens(text: str) -> int:
+    """
+    Counts the number of tokens in the given text using the initialized tokenizer.
+    
+    Args:
+        text (str): The text to count tokens for.
+        
+    Returns:
+        int: The number of tokens.
+    """
+    return len(encoding.encode(text))
+
+# Initialize the tokenizer
+try:
+    encoding = tiktoken.encoding_for_model(used_model)
+    log_debug(f"[Main] Tokenizer initialized for model: {used_model}")
+except KeyError:
+    # Fallback if the model is not recognized
+    encoding = tiktoken.get_encoding("cl100k_base")
+    log_debug("[Main] Fallback tokenizer initialized.")
 
 # Set OpenAI API key from environment variable
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -65,10 +97,11 @@ st.sidebar.markdown("---")
 if st.sidebar.button("🔄 Refresh Vector Store"):
     with st.spinner("Refreshing the vector store..."):
         try:
-            vector_store = refresh_vector_store()
+            vector_store, chunks = refresh_vector_store()
             qa_chain = create_rag_chain(vector_store, used_model)
             st.session_state['qa_chain'] = qa_chain  # Store qa_chain in session state
             st.session_state['vector_store_loaded'] = True  # Indicate that vector store is loaded
+            st.session_state['chunks'] = chunks  # Store chunks in session state
             st.success("Vector store refreshed successfully.")
             log_debug("Vector store refreshed successfully.")
         except Exception as e:
@@ -148,11 +181,12 @@ if selection == "Chat with Amanda":
         # Attempt to load the vector store
         try:
             log_debug("Loading vector store...")
-            vectorstore = load_vector_store()
+            vectorstore, chunks = load_vector_store()
             log_debug("Vector store loaded successfully.")
             qa_chain = create_rag_chain(vectorstore, used_model)
             st.session_state['qa_chain'] = qa_chain  # Store qa_chain in session state
             st.session_state['vector_store_loaded'] = True
+            st.session_state['chunks'] = chunks  # Store chunks in session state
         except FileNotFoundError as e:
             st.error(str(e))
             log_debug(str(e))
@@ -211,7 +245,7 @@ if selection == "Chat with Amanda":
                             log_debug("No source information available.")
 
                         # Calculate cost based on token usage
-                        num_tokens = len(user_input.split()) + len(amanda_message.split())
+                        num_tokens = count_tokens(user_input) + count_tokens(amanda_message)
                         if used_model == "gpt-4-turbo":
                             cost_per_1k_tokens = 0.012
                         elif used_model == "gpt-4":
@@ -294,13 +328,26 @@ if selection == "Chat with Amanda":
                             # Replace the last assistant message
                             if len(active_messages) >= 1 and active_messages[-1]["role"] == "assistant":
                                 active_messages[-1]["content"] = amanda_message
-                                active_messages[-1]["tokens"] = len(amanda_message.split())
+                                active_messages[-1]["tokens"] = count_tokens(amanda_message)
                                 # Optionally update cost and source_info
                             else:
                                 active_messages.append({
                                     "role": "assistant",
                                     "content": amanda_message
                                 })
+                            # Recalculate cost
+                            num_tokens = count_tokens(user_query) + count_tokens(amanda_message)
+                            if used_model == "gpt-4-turbo":
+                                cost_per_1k_tokens = 0.012
+                            elif used_model == "gpt-4":
+                                cost_per_1k_tokens = 0.03
+                            elif used_model == "gpt-3.5-turbo":
+                                cost_per_1k_tokens = 0.002
+                            else:
+                                raise ValueError(f"Unsupported model: {used_model}")
+                            cost = (num_tokens / 1000) * cost_per_1k_tokens
+                            active_messages[-1]["cost"] = cost
+                            active_messages[-1]["tokens"] = num_tokens
                             st.session_state["all_chats"][st.session_state["active_chat"]] = active_messages
                             log_debug("Regeneration successful.")
                     except Exception as e:
@@ -329,7 +376,7 @@ elif selection == "User Feedback":
 
 elif selection == "All Chunks":
     st.title("Document Chunks")
-    if st.session_state["chunks"]:
+    if st.session_state.get("chunks"):
         log_debug(f"Total number of chunks: {len(st.session_state['chunks'])}")
         for idx, chunk in enumerate(st.session_state["chunks"]):
             source = chunk.metadata.get("source", "Unknown")

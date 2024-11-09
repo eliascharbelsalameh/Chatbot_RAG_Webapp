@@ -4,8 +4,9 @@ import os
 from langchain.vectorstores import FAISS  # type: ignore
 from langchain.embeddings import HuggingFaceEmbeddings  # type: ignore
 from document_processing import read_files_from_directory
-from typing import List
-from langchain.docstore.document import Document
+from data_processing import split_into_chunks  # Import the chunking function
+from typing import List, Tuple
+from langchain.docstore.document import Document  # type: ignore
 
 # Get the absolute path of the current file
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -47,19 +48,29 @@ def faiss_index_exists(vector_store_dir: str = VECTORSTORE_DIR) -> bool:
     return index_exists and metadata_exists
 
 
-def create_vector_store(vector_store_dir: str = VECTORSTORE_DIR, input_dir: str = INPUT_DIRECTORY) -> FAISS:
+def create_vector_store(vector_store_dir: str = VECTORSTORE_DIR, input_dir: str = INPUT_DIRECTORY) -> Tuple[FAISS, List[Document]]:
     """
     Creates a new FAISS vector store from documents in the input directory.
+    Includes chunking of documents to limit API input size.
+    Returns both the vector store and the list of chunks.
     """
     print(f"[FAISS Utils] Reading documents from {input_dir}...")
     documents: List[Document] = read_files_from_directory(input_dir)
     if not documents:
         raise ValueError(f"No supported documents found in {input_dir}. Cannot create FAISS vector store.")
 
-    print(f"[FAISS Utils] Embedding documents using HuggingFaceEmbeddings...")
+    print(f"[FAISS Utils] Splitting documents into chunks...")
+    all_chunks = []
+    for doc in documents:
+        chunks = split_into_chunks(doc.page_content, max_length=500)  # Adjust max_length as needed
+        for chunk in chunks:
+            all_chunks.append(Document(page_content=chunk, metadata=doc.metadata))
+    print(f"[FAISS Utils] Total chunks created: {len(all_chunks)}")
+
+    print(f"[FAISS Utils] Embedding chunks using HuggingFaceEmbeddings...")
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
-    print(f"[FAISS Utils] Creating FAISS vector store from {input_dir}...")
-    vector_store = FAISS.from_documents(documents, embeddings)
+    print(f"[FAISS Utils] Creating FAISS vector store from chunks...")
+    vector_store = FAISS.from_documents(all_chunks, embeddings)
 
     # Ensure the vectorstore directory exists
     os.makedirs(vector_store_dir, exist_ok=True)
@@ -67,18 +78,19 @@ def create_vector_store(vector_store_dir: str = VECTORSTORE_DIR, input_dir: str 
     print(f"[FAISS Utils] Saving FAISS vector store to {vector_store_dir}...")
     vector_store.save_local(vector_store_dir)
     print("[FAISS Utils] FAISS vector store created and saved successfully.")
-    return vector_store
+    return vector_store, all_chunks  # Return both vector store and chunks
 
 
-def refresh_vector_store(vector_store_dir: str = VECTORSTORE_DIR, input_dir: str = INPUT_DIRECTORY) -> FAISS:
+def refresh_vector_store(vector_store_dir: str = VECTORSTORE_DIR, input_dir: str = INPUT_DIRECTORY) -> Tuple[FAISS, List[Document]]:
     """
     Refreshes the FAISS vector store by recreating it from scratch.
+    Returns both the refreshed vector store and the list of chunks.
     """
     try:
         print("[FAISS Utils] Refreshing FAISS vector store...")
-        vector_store = create_vector_store(vector_store_dir, input_dir)
+        vector_store, chunks = create_vector_store(vector_store_dir, input_dir)
         print("[FAISS Utils] FAISS vector store refreshed successfully.")
-        return vector_store
+        return vector_store, chunks
     except Exception as e:
         print(f"[FAISS Utils] Failed to refresh FAISS vector store: {e}.")
         raise e
