@@ -11,7 +11,7 @@ from transformers import pipeline  # type: ignore
 from groq import Groq  # type: ignore
 import json
 import threading  # To handle threading for non-blocking operations
-import tiktoken # type: ignore
+import tiktoken  # type: ignore
 
 from audio_utils import clear_audio_files, play_audio, record_audio, transcribe_audio_v3
 from document_processing import read_files_from_directory
@@ -23,12 +23,10 @@ from web_crawl import WebCrawler
 from data_processing import load_crawled_data, split_into_chunks
 
 # TODO: OLAMA download LLAMA 3.2 8b 
-# TODO: apply chunking to the 
 # TODO: fix whisper
 # TODO: load files online
-# TODO: add chat history
+# TODO: adjust chat history
 # TODO: enhance tables
-# TODO: load file online
 # TODO: embedding text 3
 
 # Initialize Streamlit app
@@ -37,14 +35,22 @@ st.set_page_config(page_title="Amanda Chatbot", layout="wide")
 # Initialize session state
 initialize_session_state()
 
+# Ensure 'feedback' exists and matches the number of chats
+if 'feedback' not in st.session_state:
+    st.session_state['feedback'] = []
+
+# Synchronize the length of 'feedback' with 'all_chats'
+while len(st.session_state['feedback']) < len(st.session_state['all_chats']):
+    st.session_state['feedback'].append(None)
+while len(st.session_state['feedback']) > len(st.session_state['all_chats']):
+    st.session_state['feedback'].pop()
+
 # Initialize the recorder
 recorder = get_recorder()
 
 # Define supported model and temperature
 used_model = "gpt-4-turbo"
 temperature = 0.01
-
-# main.py (add this function below the imports and initializations)
 
 def count_tokens(text: str) -> int:
     """
@@ -108,25 +114,45 @@ if st.sidebar.button("🔄 Refresh Vector Store"):
             st.error(f"Failed to refresh vector store: {e}")
             log_debug(f"Failed to refresh vector store: {e}")
 
-# Add "Chats" section with "New Chat" button
+# Add "Chats" section with "New Chat" and "Delete Chat" buttons
 st.sidebar.markdown("---")
 st.sidebar.markdown("## Chats")
+
+# Button to add a new chat
 if st.sidebar.button("➕ New Chat"):
     st.session_state["all_chats"].append([])  # Create a new chat session
     st.session_state["active_chat"] = len(st.session_state["all_chats"]) - 1  # Set this as the active chat
     st.session_state["chat_titles"] = st.session_state.get("chat_titles", [])
     st.session_state["chat_titles"].append(f"Chat {len(st.session_state['all_chats'])}")
+    st.session_state["feedback"].append(None)  # Initialize feedback for the new chat
+    log_debug(f"New chat created: Chat {len(st.session_state['all_chats'])}")
 
-# Display chat list as a fixed list in the sidebar with an outline for the active chat
+# Display chat list with Delete buttons
 for i, title in enumerate(st.session_state.get("chat_titles", [])):
-    if i == st.session_state["active_chat"]:
-        st.sidebar.markdown(
-            f"<div style='border: 2px solid #4CAF50; padding: 5px;'>{title}</div>",
-            unsafe_allow_html=True
-        )
-    else:
-        if st.sidebar.button(title, key=f"chat_{i}"):
-            st.session_state["active_chat"] = i  # Set the selected chat as active
+    # Create two columns: one for the title and one for the delete button
+    chat_col1, chat_col2 = st.sidebar.columns([4, 1])
+    with chat_col1:
+        if i == st.session_state["active_chat"]:
+            st.markdown(
+                f"<div style='border: 2px solid #4CAF50; padding: 5px; border-radius:5px;'>{title}</div>",
+                unsafe_allow_html=True
+            )
+        else:
+            if st.sidebar.button(title, key=f"select_chat_{i}"):
+                st.session_state["active_chat"] = i  # Set the selected chat as active
+                log_debug(f"Switched to chat: {title}")
+    with chat_col2:
+        if len(st.session_state["all_chats"]) > 1:
+            if st.sidebar.button("🗑️", key=f"delete_chat_{i}"):
+                # Delete the chat
+                del st.session_state["all_chats"][i]
+                del st.session_state["chat_titles"][i]
+                del st.session_state["feedback"][i]
+                log_debug(f"Deleted chat index: {i}")
+                # Adjust active_chat index
+                if st.session_state["active_chat"] >= len(st.session_state["all_chats"]):
+                    st.session_state["active_chat"] = len(st.session_state["all_chats"]) - 1
+                st.success(f"Chat {i + 1} deleted.")
 
 # Add "Audio Recorder" section in the sidebar
 st.sidebar.markdown("---")
@@ -220,6 +246,9 @@ if selection == "Chat with Amanda":
         st.session_state["all_chats"][st.session_state["active_chat"]] = active_messages
         log_debug(f"User input: {user_input}")
 
+        # Clear the transcription after use
+        st.session_state["transcription"] = ""
+
         with st.spinner("Amanda is thinking..."):
             try:
                 qa_chain = st.session_state.get('qa_chain', None)
@@ -245,7 +274,9 @@ if selection == "Chat with Amanda":
                             log_debug("No source information available.")
 
                         # Calculate cost based on token usage
-                        num_tokens = count_tokens(user_input) + count_tokens(amanda_message)
+                        user_tokens = count_tokens(user_input)
+                        amanda_tokens = count_tokens(amanda_message)
+                        num_tokens = user_tokens + amanda_tokens
                         if used_model == "gpt-4-turbo":
                             cost_per_1k_tokens = 0.012
                         elif used_model == "gpt-4":
@@ -255,6 +286,7 @@ if selection == "Chat with Amanda":
                         else:
                             raise ValueError(f"Unsupported model: {used_model}")
                         cost = (num_tokens / 1000) * cost_per_1k_tokens
+                        cost = round(cost, 6)  # Round to 6 decimal places for precision
                         log_debug(f"Cost of operation: ${cost:.6f}")
 
                         # Append the response along with cost and source info
@@ -328,26 +360,46 @@ if selection == "Chat with Amanda":
                             # Replace the last assistant message
                             if len(active_messages) >= 1 and active_messages[-1]["role"] == "assistant":
                                 active_messages[-1]["content"] = amanda_message
-                                active_messages[-1]["tokens"] = count_tokens(amanda_message)
-                                # Optionally update cost and source_info
+                                # Recalculate tokens and cost
+                                user_tokens = count_tokens(user_query)
+                                amanda_tokens = count_tokens(amanda_message)
+                                num_tokens = user_tokens + amanda_tokens
+                                if used_model == "gpt-4-turbo":
+                                    cost_per_1k_tokens = 0.012
+                                elif used_model == "gpt-4":
+                                    cost_per_1k_tokens = 0.03
+                                elif used_model == "gpt-3.5-turbo":
+                                    cost_per_1k_tokens = 0.002
+                                else:
+                                    raise ValueError(f"Unsupported model: {used_model}")
+                                cost = (num_tokens / 1000) * cost_per_1k_tokens
+                                cost = round(cost, 6)
+                                active_messages[-1]["cost"] = cost
+                                active_messages[-1]["tokens"] = num_tokens
+                                active_messages[-1]["source_info"] = source_info if "source_info" in result else "Source: Not available"
                             else:
                                 active_messages.append({
                                     "role": "assistant",
                                     "content": amanda_message
                                 })
-                            # Recalculate cost
-                            num_tokens = count_tokens(user_query) + count_tokens(amanda_message)
-                            if used_model == "gpt-4-turbo":
-                                cost_per_1k_tokens = 0.012
-                            elif used_model == "gpt-4":
-                                cost_per_1k_tokens = 0.03
-                            elif used_model == "gpt-3.5-turbo":
-                                cost_per_1k_tokens = 0.002
-                            else:
-                                raise ValueError(f"Unsupported model: {used_model}")
-                            cost = (num_tokens / 1000) * cost_per_1k_tokens
-                            active_messages[-1]["cost"] = cost
-                            active_messages[-1]["tokens"] = num_tokens
+                                # Calculate cost
+                                user_tokens = count_tokens(user_query)
+                                amanda_tokens = count_tokens(amanda_message)
+                                num_tokens = user_tokens + amanda_tokens
+                                if used_model == "gpt-4-turbo":
+                                    cost_per_1k_tokens = 0.012
+                                elif used_model == "gpt-4":
+                                    cost_per_1k_tokens = 0.03
+                                elif used_model == "gpt-3.5-turbo":
+                                    cost_per_1k_tokens = 0.002
+                                else:
+                                    raise ValueError(f"Unsupported model: {used_model}")
+                                cost = (num_tokens / 1000) * cost_per_1k_tokens
+                                cost = round(cost, 6)
+                                active_messages[-1]["cost"] = cost
+                                active_messages[-1]["tokens"] = num_tokens
+                                active_messages[-1]["source_info"] = "Source: Not available"
+                            # Update session state
                             st.session_state["all_chats"][st.session_state["active_chat"]] = active_messages
                             log_debug("Regeneration successful.")
                     except Exception as e:
@@ -370,9 +422,9 @@ elif selection == "Debugging Logs":
 
 elif selection == "User Feedback":
     st.title("User Feedback Summary")
-    for i, feedback in enumerate(st.session_state["feedback"]):
+    for i, feedback in enumerate(st.session_state.get("feedback", [])):
         if feedback:
-            st.markdown(f"Message {i}: {feedback}")
+            st.markdown(f"**Message {i + 1}:** {feedback}")
 
 elif selection == "All Chunks":
     st.title("Document Chunks")
@@ -412,7 +464,7 @@ elif selection == "Web Crawl":
             def run_crawl():
                 try:
                     crawler = WebCrawler(start_url=start_url, max_depth=int(max_depth), delay=1)
-                    crawler.crawl()
+                    crawler.crawl(progress_bar=progress_bar, status_text=status_text)
                     st.success(f"Web crawling completed up to depth {max_depth}.")
                     log_debug(f"Web crawling completed for {start_url} up to depth {max_depth}.")
                 except Exception as e:
@@ -455,3 +507,4 @@ elif selection == "Web Crawl":
 
 # Footer
 st.markdown("---")
+st.write("© 2024 Amanda Chatbot. All rights reserved.")
