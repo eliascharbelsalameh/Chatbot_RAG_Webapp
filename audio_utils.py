@@ -4,14 +4,21 @@ import sounddevice as sd # type: ignore
 import wave
 import tempfile
 from langdetect import detect, LangDetectException # type: ignore
-from deepgram import Deepgram # type: ignore
 import requests
+from deepgram import Deepgram
 
 audio_folder = "audio_files"
 if not os.path.exists(audio_folder):
     os.makedirs(audio_folder)
 
 pygame.mixer.init()
+
+DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+if DEEPGRAM_API_KEY:
+    deepgram_client = Deepgram(DEEPGRAM_API_KEY)
+else:
+    deepgram_client = None
+
 
 def clear_audio_files():
     if pygame.mixer.music.get_busy():
@@ -73,28 +80,8 @@ def record_audio(duration=5, sample_rate=44100):
         wf.writeframes(audio_data.tobytes())
     return temp_wav_file.name
 
-def transcribe_audio_v3(audio_file_path):
-    DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
-    if not DEEPGRAM_API_KEY:
-        raise ValueError("Deepgram API key is not set in the environment variables.")
-
-    headers = {
-        'Authorization': f'Token {DEEPGRAM_API_KEY}',
-    }
-    url = 'https://api.deepgram.com/v1/listen'
-
-    with open(audio_file_path, 'rb') as audio_file:
-        response = requests.post(
-            url,
-            headers=headers,
-            files={'file': audio_file},
-            params={
-                'punctuate': 'true',
-                'language': 'en'
-            }
-        )
-
-    if response.status_code == 200:
-        return response.json()
-    else:
-        raise Exception(f"Failed to transcribe audio: {response.text}")
+def transcribe_audio_v3(mp3_file_path):
+    with open(mp3_file_path, 'rb') as audio:
+        source = {'buffer': audio, 'mimetype': 'audio/mp3'}
+        response = deepgram_client.transcription.prerecorded(source)
+    return response

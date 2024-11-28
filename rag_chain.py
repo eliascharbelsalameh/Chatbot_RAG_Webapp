@@ -1,6 +1,6 @@
 from langchain.prompts import PromptTemplate # type: ignore
 from langchain.chains import RetrievalQA # type: ignore
-from langchain.chat_models import ChatOpenAI # type: ignore
+from langchain_community.chat_models import ChatOpenAI  # type: ignore
 
 def create_rag_chain(vectorstore, used_model):
     template = """

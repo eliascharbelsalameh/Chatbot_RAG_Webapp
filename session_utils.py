@@ -1,6 +1,8 @@
 # session_utils.py
 
 import streamlit as st
+import queue
+import multiprocessing
 
 def initialize_session_state():
     if 'all_chats' not in st.session_state:
@@ -25,7 +27,13 @@ def initialize_session_state():
     # Initialize "chunks" to prevent KeyError
     if 'chunks' not in st.session_state:
         st.session_state['chunks'] = []  # List to store document chunks
+    # Ensure 'feedback' and 'debug_log' exist and match the number of chats
 
-def log_debug(message: str):
-    st.session_state['debug_log'].append(message)
-    print(message)  # Also print to console for external logs
+def initialize_logging():
+    if 'log_queue' not in st.session_state:
+        st.session_state['log_queue'] = multiprocessing.Queue()
+
+def log_debug(message):
+    if 'log_queue' not in st.session_state:
+        initialize_logging()
+    st.session_state['log_queue'].put(message)

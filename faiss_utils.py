@@ -1,8 +1,8 @@
 # faiss_utils.py
 
 import os
-from langchain.vectorstores import FAISS  # type: ignore
-from langchain.embeddings import HuggingFaceEmbeddings  # type: ignore
+from langchain_community.vectorstores import FAISS # type: ignore
+from langchain_community.embeddings import HuggingFaceEmbeddings # type: ignore
 from document_processing import read_files_from_directory
 from data_processing import split_into_chunks  # Import the chunking function
 from typing import List, Tuple
