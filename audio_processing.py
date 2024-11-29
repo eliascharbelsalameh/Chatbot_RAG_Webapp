@@ -28,10 +28,10 @@ class AudioRecorder:
             return
         try:
             self.stream = self.p.open(format=FORMAT,
-                                      channels=CHANNELS,
-                                      rate=RATE,
-                                      input=True,
-                                      frames_per_buffer=CHUNK)
+                                        channels=CHANNELS,
+                                        rate=RATE,
+                                        input=True,
+                                        frames_per_buffer=CHUNK)
         except Exception as e:
             st.error(f"Could not open microphone: {str(e)}")
             st.session_state["debug_log"].append(f"Microphone open error: {str(e)}")

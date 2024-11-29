@@ -1,32 +1,49 @@
 # main.py
 
 import streamlit as st
-import openai
 import os
 import pyperclip  # type: ignore
 from deepgram import Deepgram  # type: ignore
-import tempfile
-import sounddevice as sd  # type: ignore
-from transformers import pipeline  # type: ignore
-from groq import Groq  # type: ignore
 import json
 import multiprocessing  # To handle multiprocessing for Scrapy
-import tiktoken  # type: ignore
 import scrapy  # type: ignore
-from urllib.parse import urlparse  # Added import
+from urllib.parse import urlparse
 import queue  # Added import for thread-safe queues
 import time  # For sleep in progress updates
+import io
 
-from scrapy.crawler import CrawlerRunner  # type: ignore
-from twisted.internet import reactor  # type: ignore
+from typing import Optional, List, Mapping, Any
+
+from scrapy.crawler import CrawlerProcess  # type: ignore
 from scrapy.utils.project import get_project_settings  # type: ignore
-from audio_utils import clear_audio_files, play_audio, record_audio, transcribe_audio_v3
 from document_processing import read_files_from_directory
 from faiss_utils import load_vector_store, refresh_vector_store
-from rag_chain import create_rag_chain
 from session_utils import initialize_session_state, log_debug, initialize_logging
-from audio_processing import get_recorder
 from data_processing import load_crawled_data, split_into_chunks
+
+# Import st_audiorec for audio recording
+from st_audiorec import st_audiorec  # type: ignore
+
+from langchain.llms import LlamaCpp  # type: ignore
+from langchain.prompts import PromptTemplate  # type: ignore
+from langchain.chains import RetrievalQA  # type: ignore
+
+# Import for offline text-to-speech
+import pyttsx3  # type: ignore
+import tempfile
+
+# Import BeautifulSoup for HTML parsing
+from bs4 import BeautifulSoup  # type: ignore
+
+# Path to your GGUF model
+model_path = "C:/Users/elias/.cache/lm-studio/models/hugging-quants/Llama-3.2-1B-Instruct-Q8_0-GGUF/llama-3.2-1b-instruct-q8_0.gguf"
+
+# Initialize the LlamaCpp LLM
+llm = LlamaCpp(
+    model_path=model_path,
+    n_ctx=128000,    # Adjust to the model's maximum context size
+    n_threads=8    # Adjust based on your CPU
+)
 
 # Initialize Streamlit app
 st.set_page_config(page_title="Amanda Chatbot", layout="wide")
@@ -48,55 +65,13 @@ while len(st.session_state['feedback']) < len(st.session_state['all_chats']):
 while len(st.session_state['feedback']) > len(st.session_state['all_chats']):
     st.session_state['feedback'].pop()
 
-# Initialize the recorder
-recorder = get_recorder()
-
-# Define supported model and temperature
-used_model = "gpt-4-turbo"
-temperature = 0.01
-
-def count_tokens(text: str):
-    """
-    Counts the number of tokens in the given text using the initialized tokenizer.
-
-    Args:
-        text (str): The text to count tokens for.
-
-    Returns:
-        int: The number of tokens.
-    """
-    return len(encoding.encode(text))
-
-# Initialize the tokenizer
-try:
-    encoding = tiktoken.encoding_for_model(used_model)
-    log_debug(f"[Main] Tokenizer initialized for model: {used_model}")
-except KeyError:
-    # Fallback if the model is not recognized
-    encoding = tiktoken.get_encoding("cl100k_base")
-    log_debug("[Main] Fallback tokenizer initialized.")
-
-# Set OpenAI API key from environment variable
-openai.api_key = os.getenv("OPENAI_API_KEY")
-
-# Initialize Deepgram API client
-DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
-if DEEPGRAM_API_KEY:
-    deepgram_client = Deepgram(DEEPGRAM_API_KEY)
-    log_debug("[Main] Deepgram client initialized.")
-else:
-    deepgram_client = None
-    log_debug("[Main] Deepgram API key not found. Audio transcription will not work.")
-
 # Initialize the summarization pipeline with a specified model to avoid warnings
+from transformers import pipeline   # type: ignore
 summarizer = pipeline(
     "summarization",
     model="sshleifer/distilbart-cnn-12-6",
     tokenizer_kwargs={"clean_up_tokenization_spaces": True}  # Set explicitly
 )
-
-# Clear any existing audio files
-clear_audio_files()
 
 # Define pages for the Streamlit application
 PAGES = ["Chat with Amanda", "Debugging Logs", "User Feedback", "All Chunks", "Web Crawl"]
@@ -106,15 +81,16 @@ class AmandaSpider(scrapy.Spider):
     name = "amanda_spider"
 
     custom_settings = {
-        # Removed 'REQUEST_FINGERPRINTER_IMPLEMENTATION' to eliminate deprecation warning
         'FEED_EXPORT_ENCODING': 'utf-8',
         'LOG_LEVEL': 'ERROR',  # Reduce Scrapy logs
+        'DEPTH_LIMIT': 3,  # Control the depth of crawling
+        'CLOSESPIDER_PAGECOUNT': 100,  # Stop after crawling 100 pages
     }
 
     def __init__(self, start_url, max_depth=2, max_pages=100, log_queue=None, *args, **kwargs):
         super(AmandaSpider, self).__init__(*args, **kwargs)
         self.start_urls = [start_url]
-        self.max_depth = max_depth
+        self.allowed_domains = [urlparse(start_url).netloc]
         self.max_pages = max_pages
         self.page_count = 0
         self.crawled_data = []
@@ -125,11 +101,33 @@ class AmandaSpider(scrapy.Spider):
             return
 
         self.page_count += 1
-        self.crawled_data.append({
-            "source_url": response.url,
-            "content": response.text
-        })
-        self.log_debug(f"Crawled {self.page_count}: {response.url}")
+
+        # Only proceed if response is TextResponse (i.e., text content)
+        if not isinstance(response, scrapy.http.TextResponse):
+            self.log_debug(f"Skipped non-text content: {response.url}")
+            return
+
+        # Use BeautifulSoup to parse the response body
+        soup = BeautifulSoup(response.text, 'lxml')
+
+        # Remove script and style elements
+        for script in soup(['script', 'style', 'header', 'footer', 'nav', 'noscript']):
+            script.extract()  # Remove these elements
+
+        # Get text
+        text_content = soup.get_text(separator=' ')
+
+        # Collapse whitespace
+        text_content = ' '.join(text_content.split())
+
+        if text_content.strip():
+            self.crawled_data.append({
+                "source_url": response.url,
+                "content": text_content
+            })
+            self.log_debug(f"Crawled {self.page_count}: {response.url}")
+        else:
+            self.log_debug(f"No content extracted from: {response.url}")
 
         if self.page_count >= self.max_pages:
             return
@@ -137,13 +135,17 @@ class AmandaSpider(scrapy.Spider):
         # Extract links and follow them
         for href in response.css('a::attr(href)').getall():
             next_url = response.urljoin(href)
-            if self._is_valid_url(next_url):
+            if self._is_valid_url(next_url) and self._is_allowed_domain(next_url):
                 yield scrapy.Request(next_url, callback=self.parse)
 
     @staticmethod
     def _is_valid_url(url):
         parsed = urlparse(url)
         return parsed.scheme in ('http', 'https')
+
+    def _is_allowed_domain(self, url):
+        domain = urlparse(url).netloc
+        return domain == self.allowed_domains[0]
 
     def closed(self, reason):
         # Save the crawled data
@@ -155,22 +157,75 @@ class AmandaSpider(scrapy.Spider):
         if self.log_queue:
             self.log_queue.put(message)
 
+# Function to transcribe audio using Deepgram
+def transcribe_audio(audio_bytes):
+    """
+    Transcribe an audio bytes object using Deepgram API.
+
+    Args:
+        audio_bytes: Bytes of the recorded audio.
+
+    Returns:
+        dict: A dictionary containing the transcription result.
+    """
+    import asyncio
+
+    async def _transcribe(audio_data):
+        source = {'buffer': audio_data, 'mimetype': 'audio/wav'}
+        response = await deepgram_client.transcription.prerecorded(source, {'punctuate': True})
+        return response
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    response = loop.run_until_complete(_transcribe(audio_bytes))
+    return response
+
 # Function to run Scrapy spider in a separate process
 def run_spider_process(start_url, max_depth, max_pages, log_queue):
     try:
-        runner = CrawlerRunner(get_project_settings())
-        deferred = runner.crawl(
+        process = CrawlerProcess(get_project_settings())
+        process.crawl(
             AmandaSpider,
             start_url=start_url,
             max_depth=max_depth,
             max_pages=max_pages,
             log_queue=log_queue
         )
-        deferred.addBoth(lambda _: reactor.stop())
-        reactor.run()
+        process.start()
     except Exception as e:
         if log_queue:
             log_queue.put(f"Scrapy crawling error: {e}")
+
+# Function to create RAG chain with custom prompt template
+def create_rag_chain_with_prompt(vectorstore, llm):
+    # Define the prompt template
+    prompt_template = """You are Amanda, an AI assistant.
+
+Answer the following question to the best of your ability using the provided context.
+If you don't know the answer, just say "I don't know" without making anything up.
+Keep your answer concise.
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:"""
+
+    PROMPT = PromptTemplate(
+        template=prompt_template, input_variables=["context", "question"]
+    )
+
+    # Create the RetrievalQA chain with the custom prompt and return source documents
+    qa_chain = RetrievalQA.from_chain_type(
+        llm=llm,
+        chain_type="stuff",
+        retriever=vectorstore.as_retriever(),
+        return_source_documents=True,
+        chain_type_kwargs={"prompt": PROMPT}
+    )
+    return qa_chain
 
 # Set up Streamlit sidebar
 st.sidebar.title("Menu")
@@ -182,7 +237,7 @@ if st.sidebar.button("🔄 Refresh Vector Store"):
     with st.spinner("Refreshing the vector store..."):
         try:
             vector_store, chunks = refresh_vector_store()
-            qa_chain = create_rag_chain(vector_store, used_model)
+            qa_chain = create_rag_chain_with_prompt(vector_store, llm)
             st.session_state['qa_chain'] = qa_chain  # Store qa_chain in session state
             st.session_state['vector_store_loaded'] = True  # Indicate that vector store is loaded
             st.session_state['chunks'] = chunks  # Store chunks in session state
@@ -232,48 +287,6 @@ for i, title in enumerate(st.session_state.get("chat_titles", [])):
                     st.session_state["active_chat"] = len(st.session_state["all_chats"]) - 1
                 st.success(f"Chat {i + 1} deleted.")
 
-# Add "Audio Recorder" section in the sidebar
-st.sidebar.markdown("---")
-st.sidebar.title("Audio Recorder")
-st.sidebar.write("Record and transcribe audio using Deepgram to talk to Amanda.")
-
-rec_col1, rec_col2 = st.sidebar.columns([1, 1])
-
-with rec_col1:
-    if st.sidebar.button("Start Recording"):
-        if not st.session_state.get("recording", False):
-            recorder.start_recording()
-            st.session_state["recording"] = True
-            st.success("Recording started.")
-            log_debug("Recording started.")
-        else:
-            st.warning("Recording is already in progress.")
-
-with rec_col2:
-    if st.sidebar.button("Stop Recording"):
-        if st.session_state.get("recording", False):
-            mp3_file = recorder.stop_recording()
-            st.session_state["recording"] = False
-            if mp3_file:
-                # Transcribe the recorded MP3
-                try:
-                    log_debug("Transcribing audio...")
-                    transcript_response = transcribe_audio_v3(mp3_file)
-                    # Assuming transcribe_audio_v3 returns a dict with 'text' key
-                    transcript_text = transcript_response.get('text', 'Transcription failed.')
-                    if not transcript_text:
-                        st.error("Transcription failed: Empty response.")
-                        log_debug("Audio transcription failed.")
-                    else:
-                        st.session_state["transcription"] = transcript_text
-                        st.success(f"Transcription: {transcript_text}")
-                        log_debug("Audio transcription successful.")
-                except Exception as e:
-                    st.error(f"Transcription exception: {str(e)}")
-                    log_debug(f"Transcription exception: {str(e)}")
-        else:
-            st.warning("No recording in progress to stop.")
-
 # Handle different pages
 if selection == "Chat with Amanda":
     # Title and introductory text
@@ -287,7 +300,7 @@ if selection == "Chat with Amanda":
             log_debug("Loading vector store...")
             vectorstore, chunks = load_vector_store()
             log_debug("Vector store loaded successfully.")
-            qa_chain = create_rag_chain(vectorstore, used_model)
+            qa_chain = create_rag_chain_with_prompt(vectorstore, llm)
             st.session_state['qa_chain'] = qa_chain  # Store qa_chain in session state
             st.session_state['vector_store_loaded'] = True
             st.session_state['chunks'] = chunks  # Store chunks in session state
@@ -303,11 +316,12 @@ if selection == "Chat with Amanda":
 
     # Update chat title after the first user input
     if st.session_state["all_chats"][st.session_state["active_chat"]]:
-        first_message = st.session_state["all_chats"][st.session_state["active_chat"]][0].get("content", "")
-        if first_message and st.session_state["chat_titles"][st.session_state["active_chat"]].startswith("Chat"):
+        user_messages = [msg['content'] for msg in st.session_state["all_chats"][st.session_state["active_chat"]] if msg['role'] == 'user']
+        if user_messages and st.session_state["chat_titles"][st.session_state["active_chat"]].startswith("Chat"):
+            first_messages_text = ' '.join(user_messages[:3])  # Combine first 3 user messages
             try:
-                new_chat_title = summarizer(first_message, max_length=6, min_length=2, do_sample=False)[0]['summary_text']
-                st.session_state["chat_titles"][st.session_state["active_chat"]] = new_chat_title
+                new_chat_title = summarizer(first_messages_text, max_length=15, min_length=5, do_sample=False)[0]['summary_text']
+                st.session_state["chat_titles"][st.session_state["active_chat"]] = new_chat_title.strip()
                 log_debug(f"Chat title updated to: {new_chat_title}")
             except Exception as e:
                 log_debug(f"Summarization failed: {e}")
@@ -315,17 +329,47 @@ if selection == "Chat with Amanda":
     # Set up the chat messages for the active chat
     active_messages = st.session_state["all_chats"][st.session_state["active_chat"]]
 
-    # Use the transcription as user input
-    user_input = st.session_state.get("transcription", "") or st.chat_input("Type your message here...")
+    # Add audio recorder using st_audiorec
+    st.markdown("## Record a message to chat with Amanda")
+    audio_bytes = st_audiorec()
+
+    if audio_bytes is not None:
+        DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+        if DEEPGRAM_API_KEY:
+            deepgram_client = Deepgram(DEEPGRAM_API_KEY)
+            # Transcribe the recorded audio
+            try:
+                log_debug("Transcribing recorded audio...")
+                transcript_response = transcribe_audio(audio_bytes)
+                transcript_text = transcript_response['results']['channels'][0]['alternatives'][0]['transcript']
+                if not transcript_text:
+                    st.error("Transcription failed: Empty response.")
+                    log_debug("Audio transcription failed.")
+                else:
+                    st.session_state["transcription"] = transcript_text
+                    st.success(f"Transcription: {transcript_text}")
+                    log_debug("Audio transcription successful.")
+                    st.experimental_rerun()  # Rerun to process the transcription
+            except Exception as e:
+                st.error(f"Transcription exception: {str(e)}")
+                log_debug(f"Transcription exception: {str(e)}")
+        else:
+            st.error("Deepgram API key not found. Audio transcription will not work.")
+
+    # Always display the chat input box
+    user_input = st.chat_input("Type your message here...")
+
+    # If there is a transcription, use it as the user input
+    if st.session_state.get("transcription", ""):
+        user_input = st.session_state.get("transcription", "")
+        # Clear the transcription after use
+        st.session_state["transcription"] = ""
 
     # Process user input and query RAG chain
     if user_input:
         active_messages.append({"role": "user", "content": user_input})
         st.session_state["all_chats"][st.session_state["active_chat"]] = active_messages
         log_debug(f"User input: {user_input}")
-
-        # Clear the transcription after use
-        st.session_state["transcription"] = ""
 
         with st.spinner("Amanda is thinking..."):
             try:
@@ -335,55 +379,18 @@ if selection == "Chat with Amanda":
                     log_debug("RAG Chain is not available.")
                 else:
                     log_debug("Querying RAG chain...")
-                    # Implement chat history by concatenating previous messages
-                    conversation_history = ""
-                    for msg in active_messages:
-                        if msg["role"] == "user":
-                            conversation_history += f"User: {msg['content']}\n"
-                        elif msg["role"] == "assistant":
-                            conversation_history += f"Amanda: {msg['content']}\n"
+                    # Send the user's question to the chain
+                    result = qa_chain({"query": user_input})
 
-                    # Send the entire conversation history as context
-                    result = qa_chain({"query": conversation_history})
-
-                    if "result" in result and result["result"]:
+                    if result and "result" in result and result["result"]:
                         amanda_message = result["result"].strip()
                         log_debug(f"Amanda response: {amanda_message}")
 
-                        # Extract source information from the result
-                        source_documents = result.get("source_documents", [])
-                        if source_documents:
-                            source = source_documents[0].metadata.get("source", "Unknown")
-                            page = source_documents[0].metadata.get("page", "N/A")
-                            source_info = f"Source: {source}, Page: {page}"
-                            log_debug(f"Source information: {source_info}")
-                        else:
-                            source_info = "Source: Not available"
-                            log_debug("No source information available.")
-
-                        # Calculate cost based on token usage
-                        user_tokens = count_tokens(user_input)
-                        amanda_tokens = count_tokens(amanda_message)
-                        num_tokens = user_tokens + amanda_tokens
-                        if used_model == "gpt-4-turbo":
-                            cost_per_1k_tokens = 0.012
-                        elif used_model == "gpt-4":
-                            cost_per_1k_tokens = 0.03
-                        elif used_model == "gpt-3.5-turbo":
-                            cost_per_1k_tokens = 0.002
-                        else:
-                            raise ValueError(f"Unsupported model: {used_model}")
-                        cost = (num_tokens / 1000) * cost_per_1k_tokens
-                        cost = round(cost, 6)  # Round to 6 decimal places for precision
-                        log_debug(f"Cost of operation: ${cost:.6f}")
-
-                        # Append the response along with cost and source info
+                        # Append the response
                         active_messages.append({
                             "role": "assistant",
                             "content": amanda_message,
-                            "tokens": num_tokens,
-                            "cost": cost,
-                            "source_info": source_info
+                            "source_documents": result.get("source_documents", [])
                         })
                         st.session_state["all_chats"][st.session_state["active_chat"]] = active_messages
             except Exception as e:
@@ -398,25 +405,20 @@ if selection == "Chat with Amanda":
         elif message["role"] == "assistant":
             st.markdown(f"**Amanda 🤖:** {message['content']}")
 
-            # Display the cost of tokens
-            if "cost" in message:
-                token_count = message.get("tokens", 0)
-                cost = message.get("cost", 0.0)
-                st.markdown(f"<p style='color: grey;'>Tokens used: <i>{token_count}</i>, Cost: <i>${cost:.6f}</i></p>", unsafe_allow_html=True)
+            # Display source documents if available
+            if "source_documents" in message:
+                source_lines = []
+                for doc in message["source_documents"]:
+                    source = doc.metadata.get("source", "Unknown")
+                    page = doc.metadata.get("page", "N/A")
+                    source_lines.append(f"Source: {source}, Page: {page}")
+                source_text = "  \n".join(source_lines)  # Markdown line breaks
+                st.caption(source_text)  # Display in light gray font
 
-            # Display the source information
-            if "source_info" in message:
-                st.markdown(f"<p style='color: grey;'>{message['source_info']}</p>", unsafe_allow_html=True)
-
-            # Align Play, Like, Dislike, Re-generate, and Copy buttons
+            # Align Like, Dislike, Re-generate, Copy, and Play Audio buttons
             col1, col2, col3, col4, col5 = st.columns([1, 1, 1, 1, 1])
 
             with col1:
-                play_button = st.button("🔊", key=f"play_{idx}")
-                if play_button:
-                    play_audio(message['content'], file_name=f"amanda_reply_{idx}")
-
-            with col2:
                 like_button = st.button("👍", key=f"like_{idx}")
                 if like_button:
                     if len(st.session_state["feedback"]) <= idx:
@@ -425,7 +427,7 @@ if selection == "Chat with Amanda":
                         st.session_state["feedback"][idx] = "Liked"
                     st.success(f"Feedback for message {idx} set to: Liked")
 
-            with col3:
+            with col2:
                 dislike_button = st.button("👎", key=f"dislike_{idx}")
                 if dislike_button:
                     if len(st.session_state["feedback"]) <= idx:
@@ -434,77 +436,67 @@ if selection == "Chat with Amanda":
                         st.session_state["feedback"][idx] = "Disliked"
                     st.success(f"Feedback for message {idx} set to: Disliked")
 
-            with col4:
+            with col3:
                 regenerate_button = st.button("🔄", key=f"regenerate_{idx}")
                 if regenerate_button:
                     try:
                         log_debug("Regenerating response...")
-                        # To regenerate, get the entire conversation history
-                        conversation_history = ""
-                        for msg in active_messages:
-                            if msg["role"] == "user":
-                                conversation_history += f"User: {msg['content']}\n"
-                            elif msg["role"] == "assistant":
-                                conversation_history += f"Amanda: {msg['content']}\n"
+                        # Re-query the chain with the same user input
+                        # Find the corresponding user message
+                        user_message = None
+                        for i in range(idx - 1, -1, -1):
+                            if active_messages[i]["role"] == "user":
+                                user_message = active_messages[i]["content"]
+                                break
+                        if user_message:
+                            result = qa_chain({"query": user_message})
+                            if "result" in result and result["result"]:
+                                amanda_message = result["result"].strip()
+                                log_debug(f"Regenerated Amanda response: {amanda_message}")
 
-                        result = qa_chain({"query": conversation_history})
-                        if "result" in result and result["result"]:
-                            amanda_message = result["result"].strip()
-                            log_debug(f"Regenerated Amanda response: {amanda_message}")
+                                # Update the assistant message
+                                active_messages[idx]["content"] = amanda_message
+                                active_messages[idx]["source_documents"] = result.get("source_documents", [])
 
-                            # Extract source information from the result
-                            source_documents = result.get("source_documents", [])
-                            if source_documents:
-                                source = source_documents[0].metadata.get("source", "Unknown")
-                                page = source_documents[0].metadata.get("page", "N/A")
-                                source_info = f"Source: {source}, Page: {page}"
-                                log_debug(f"Source information: {source_info}")
-                            else:
-                                source_info = "Source: Not available"
-                                log_debug("No source information available.")
-
-                            # Calculate cost based on token usage
-                            user_tokens = count_tokens(user_input)
-                            amanda_tokens = count_tokens(amanda_message)
-                            num_tokens = user_tokens + amanda_tokens
-                            if used_model == "gpt-4-turbo":
-                                cost_per_1k_tokens = 0.012
-                            elif used_model == "gpt-4":
-                                cost_per_1k_tokens = 0.03
-                            elif used_model == "gpt-3.5-turbo":
-                                cost_per_1k_tokens = 0.002
-                            else:
-                                raise ValueError(f"Unsupported model: {used_model}")
-                            cost = (num_tokens / 1000) * cost_per_1k_tokens
-                            cost = round(cost, 6)
-                            log_debug(f"Cost of operation: ${cost:.6f}")
-
-                            # Update the last assistant message
-                            if len(active_messages) >= 1 and active_messages[-1]["role"] == "assistant":
-                                active_messages[-1]["content"] = amanda_message
-                                active_messages[-1]["tokens"] = num_tokens
-                                active_messages[-1]["cost"] = cost
-                                active_messages[-1]["source_info"] = source_info
-                            else:
-                                active_messages.append({
-                                    "role": "assistant",
-                                    "content": amanda_message,
-                                    "tokens": num_tokens,
-                                    "cost": cost,
-                                    "source_info": source_info
-                                })
-
-                            st.session_state["all_chats"][st.session_state["active_chat"]] = active_messages
-                            log_debug("Regeneration successful.")
+                                st.session_state["all_chats"][st.session_state["active_chat"]] = active_messages
+                                log_debug("Regeneration successful.")
                     except Exception as e:
                         st.error(f"Error: {str(e)}")
                         log_debug(f"Error during regeneration: {str(e)}")
 
-            with col5:
+            with col4:
                 copy_button = st.button("📋", key=f"copy_{idx}")
                 if copy_button:
                     pyperclip.copy(message['content'])
                     st.success("Copied to clipboard!")
+
+            with col5:
+                play_audio_button = st.button("🔊", key=f"play_audio_{idx}")
+                if play_audio_button:
+                    try:
+                        # Initialize pyttsx3 engine
+                        engine = pyttsx3.init()
+                        engine.setProperty('rate', 150)  # Adjust speech rate if needed
+
+                        # Save audio to a temporary file
+                        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+                        tmp_file_name = tmp_file.name
+                        tmp_file.close()
+
+                        engine.save_to_file(message['content'], tmp_file_name)
+                        engine.runAndWait()
+
+                        # Read the audio data
+                        with open(tmp_file_name, 'rb') as f:
+                            audio_data = f.read()
+                        os.unlink(tmp_file_name)
+
+                        # Play audio in Streamlit
+                        st.audio(audio_data, format='audio/wav')
+                        log_debug(f"Played audio for message {idx}")
+                    except Exception as e:
+                        st.error(f"Error playing audio: {str(e)}")
+                        log_debug(f"Error playing audio: {str(e)}")
 
 elif selection == "Debugging Logs":
     st.title("Debugging Logs")
