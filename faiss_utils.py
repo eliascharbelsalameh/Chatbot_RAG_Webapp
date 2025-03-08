@@ -13,7 +13,7 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Define directories using absolute paths
 VECTORSTORE_DIR = os.path.join(CURRENT_DIR, 'vectorstore', 'db_faiss')
-INPUT_DIRECTORY = r"C:\Users\elias\OneDrive\Bureau\USEK\Semesters\Term-9_Fall-202510\GIN515-Deep Learning-non_repository\Files_dir_RAG"
+INPUT_DIRECTORY = r"C:\Users\elias\Desktop\USEK\Semesters\Term-9_Fall-202510\GIN515-Deep Learning-non_repository\Files_dir_RAG"
 FAISS_INDEX_FILE = os.path.join(VECTORSTORE_DIR, 'index.faiss')
 FAISS_METADATA_FILE = os.path.join(VECTORSTORE_DIR, 'docstore.pkl')
 
