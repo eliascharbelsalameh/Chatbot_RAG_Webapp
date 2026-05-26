@@ -1,0 +1,23 @@
+# Env / secrets
+.env
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Data + generated artifacts
+data/
+vectorstore/db_faiss/
+*.partial.json
+
+# Old crawler dump (in case any legacy code still writes it)
+crawled_data.json
+
+# Audio test artifacts
+output.mp3
+output.wav
+
+# Logs
+*.log
